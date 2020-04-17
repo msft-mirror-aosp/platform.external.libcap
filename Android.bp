@@ -52,7 +52,15 @@ cc_library {
         linux_bionic: {
             enabled: true,
         },
+        linux_glibc: {
+            local_include_dirs: ["libcap/include/uapi"],
+        },
     },
+    apex_available: [
+       "//apex_available:platform",
+       "com.android.adbd",
+       "com.android.media.swcodec",
+    ],
 }
 
 cc_binary {
