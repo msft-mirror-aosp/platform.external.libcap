@@ -7,7 +7,9 @@
 
 /* #define DEBUG */
 
+#ifndef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE
+#endif
 
 #include <errno.h>
 #include <grp.h>
@@ -319,7 +321,7 @@ int pam_sm_authenticate(pam_handle_t *pamh, int flags,
 
     } else {
 
-	D(("there are no capabilities restrctions on this user"));
+	D(("there are no capabilities restrictions on this user"));
 	return PAM_IGNORE;
 
     }
