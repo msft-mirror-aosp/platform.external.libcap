@@ -1,3 +1,8 @@
+# Common version number defines for libcap
+LIBTITLE=libcap
+VERSION=2
+MINOR=47
+
 #
 ## Optional prefixes:
 #
@@ -38,14 +43,9 @@ LIBDIR=$(lib_prefix)/$(lib)
 PKGCONFIGDIR=$(LIBDIR)/pkgconfig
 GOPKGDIR=$(prefix)/share/gocode/src
 
-# Common version number defines for libcap
-LIBTITLE=libcap
-VERSION=2
-MINOR=42
-
-# Go modules have their own semantics. I plan to leave this value at 0
-# and keep it there. The Go packages should always remain backwardly
-# compatible, but I may have to up it if Go's syntax changes in a
+# Once go1.16 is released, I plan to set this value to 1 and keep it
+# there. The Go packages should always remain backwardly compatible,
+# but I may have to up it if Go's syntax dramatically changes in a
 # backwards incompatible manner. (Let's hope not.)
 GOMAJOR=0
 
@@ -54,13 +54,15 @@ GOMAJOR=0
 KERNEL_HEADERS := $(topdir)/libcap/include/uapi
 IPATH += -fPIC -I$(KERNEL_HEADERS) -I$(topdir)/libcap/include
 
-CC ?= $(CROSS_COMPILE)gcc
+CC := $(CROSS_COMPILE)gcc
 DEFINES := -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64
-CFLAGS ?= -O2 $(DEFINES)
+COPTS ?= -O2
+CFLAGS ?= $(COPTS) $(DEFINES)
 BUILD_CC ?= $(CC)
-BUILD_CFLAGS ?= -O2 $(DEFINES) $(IPATH)
-AR ?= $(CROSS_COMPILE)ar
-RANLIB ?= $(CROSS_COMPILE)ranlib
+BUILD_COPTS ?= -O2
+BUILD_CFLAGS ?= $(BUILD_COPTS) $(DEFINES) $(IPATH)
+AR := $(CROSS_COMPILE)ar
+RANLIB := $(CROSS_COMPILE)ranlib
 DEBUG = -g #-DDEBUG
 WARNINGS=-Wall -Wwrite-strings \
         -Wpointer-arith -Wcast-qual -Wcast-align \
@@ -69,7 +71,8 @@ WARNINGS=-Wall -Wwrite-strings \
 LD=$(CC) -Wl,-x -shared
 LDFLAGS ?= #-g
 LIBCAPLIB := -L$(topdir)/libcap -lcap
-LIBPSXLIB := -L$(topdir)/libcap -lpsx -lpthread
+PSXLINKFLAGS :=  -lpthread -Wl,-wrap,pthread_create
+LIBPSXLIB := -L$(topdir)/libcap -lpsx $(PSXLINKFLAGS)
 
 BUILD_GPERF := $(shell which gperf >/dev/null 2>/dev/null && echo yes)
 
@@ -77,10 +80,29 @@ SYSTEM_HEADERS = /usr/include
 INCS=$(topdir)/libcap/include/sys/capability.h
 LDFLAGS += -L$(topdir)/libcap
 CFLAGS += -Dlinux $(WARNINGS) $(DEBUG)
-PAM_CAP ?= $(shell if [ -f /usr/include/security/pam_modules.h ]; then echo yes ; else echo no ; fi)
 INDENT := $(shell if [ -n "$$(which indent 2>/dev/null)" ]; then echo "| indent -kr" ; fi)
-DYNAMIC := $(shell if [ ! -d "$(topdir)/.git" ]; then echo yes; fi)
 
+# SHARED tracks whether or not the SHARED libraries (libcap.so,
+# libpsx.so and pam_cap.so) are built. (Some environments don't
+# support shared libraries.)
+SHARED ?= yes
+# DYNAMIC controls how capsh etc are linked - to shared or static libraries
+DYNAMIC := $(shell if [ ! -d "$(topdir)/.git" ]; then echo $(SHARED); else echo no ; fi)
+
+PAM_CAP ?= $(shell if [ -f /usr/include/security/pam_modules.h ]; then echo $(SHARED) ; else echo no ; fi)
+
+# If your system does not support pthreads, override this as "no".
+#
+#    make PTHREADS=no ...
+#
+# This implies no Go support and no C/C++ libpsx build. Why might you
+# need libpsx for non-Go use? Tl;dr for POSIX semantics security:
+#
+#    https://sites.google.com/site/fullycapable/who-ordered-libpsx
+#
+PTHREADS ?= yes
+
+ifeq ($(PTHREADS),yes)
 GO := go
 GOLANG := $(shell if [ -n "$(shell $(GO) version 2>/dev/null)" ]; then echo yes ; else echo no ; fi)
 ifeq ($(GOLANG),yes)
@@ -91,9 +113,6 @@ CGO_CFLAGS := -I$(topdir)/libcap/include
 CGO_LDFLAGS := -L$(topdir)/libcap
 CGO_LDFLAGS_ALLOW := -Wl,-?-wrap[=,][^-.@][^,]*
 CGO_REQUIRED=$(shell $(topdir)/go/cgo-required.sh)
-ifeq ($(CGO_REQUIRED),0)
-# Hopefully this will not be needed at some point.
-GOBUILDTAG=-tags allthreadssyscall
 endif
 endif
 

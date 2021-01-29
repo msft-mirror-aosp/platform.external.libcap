@@ -18,13 +18,13 @@ CAPGOPACKAGE=$(PKGDIR)/cap.a
 
 DEPS=../libcap/libcap.a ../libcap/libpsx.a
 
-all: $(PSXGOPACKAGE) $(CAPGOPACKAGE) web compare-cap try-launching
+all: $(PSXGOPACKAGE) $(CAPGOPACKAGE) web setid gowns compare-cap try-launching psx-signals
 
 $(DEPS):
 	make -C ../libcap all
 
-../progs/capsh:
-	make -C ../progs capsh
+../progs/tcapsh-static:
+	make -C ../progs tcapsh-static
 
 src/$(IMPORTDIR)/psx:
 	mkdir -p "src/$(IMPORTDIR)"
@@ -43,59 +43,84 @@ good-names.go: $(topdir)/libcap/cap_names.h src/$(IMPORTDIR)/cap  mknames.go
 
 $(PSXGOPACKAGE): src/$(IMPORTDIR)/psx ../psx/*.go $(DEPS)
 	mkdir -p pkg
-	CGO_LDFLAGS_ALLOW="$(CGO_LDFLAGS_ALLOW)" GOPATH="$(GOPATH)" $(GO) install $(IMPORTDIR)/psx
+	GO111MODULE=off CGO_LDFLAGS_ALLOW="$(CGO_LDFLAGS_ALLOW)" GOPATH="$(GOPATH)" $(GO) install $(IMPORTDIR)/psx
 
 $(CAPGOPACKAGE): src/$(IMPORTDIR)/cap ../cap/*.go good-names.go $(PSXGOPACKAGE)
-	CGO_LDFLAGS_ALLOW="$(CGO_LDFLAGS_ALLOW)" GOPATH=$(GOPATH) $(GO) install $(IMPORTDIR)/cap
+	GO111MODULE=off CGO_LDFLAGS_ALLOW="$(CGO_LDFLAGS_ALLOW)" GOPATH=$(GOPATH) $(GO) install $(IMPORTDIR)/cap
 
 # Compiles something with this package to compare it to libcap. This
 # tests more when run under sudotest (see ../progs/quicktest.sh for that).
 compare-cap: compare-cap.go $(CAPGOPACKAGE)
-	CGO_LDFLAGS_ALLOW="$(CGO_LDFLAGS_ALLOW)" CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" GOPATH=$(GOPATH) $(GO) build $<
+	GO111MODULE=off CGO_LDFLAGS_ALLOW="$(CGO_LDFLAGS_ALLOW)" CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" GOPATH=$(GOPATH) $(GO) build $<
 
 web: ../goapps/web/web.go $(CAPGOPACKAGE)
-	CGO_ENABLED="$(CGO_REQUIRED)" CGO_LDFLAGS_ALLOW="$(CGO_LDFLAGS_ALLOW)" GOPATH=$(GOPATH) $(GO) build -o $@ $(GOBUILDTAG) $<
+	GO111MODULE=off CGO_ENABLED="$(CGO_REQUIRED)" CGO_LDFLAGS_ALLOW="$(CGO_LDFLAGS_ALLOW)" GOPATH=$(GOPATH) $(GO) build -o $@ $<
 ifeq ($(RAISE_GO_FILECAP),yes)
 	make -C ../progs setcap
 	sudo ../progs/setcap cap_setpcap,cap_net_bind_service=p web
 	@echo "NOTE: RAISED cap_setpcap,cap_net_bind_service ON web binary"
 endif
 
+setid: ../goapps/setid/setid.go $(CAPGOPACKAGE) $(PSXGOPACKAGE)
+	GO111MODULE=off CGO_ENABLED="$(CGO_REQUIRED)" CGO_LDFLAGS_ALLOW="$(CGO_LDFLAGS_ALLOW)" GOPATH=$(GOPATH) $(GO) build -o $@ $<
+
+gowns: ../goapps/gowns/gowns.go $(CAPGOPACKAGE)
+	GO111MODULE=off CGO_ENABLED="$(CGO_REQUIRED)" CGO_LDFLAGS_ALLOW="$(CGO_LDFLAGS_ALLOW)" GOPATH=$(GOPATH) $(GO) build -o $@ $<
+
 ok: ok.go
-	CGO_ENABLED=0 GOPATH=$(GOPATH) $(GO) build $<
+	GO111MODULE=off CGO_ENABLED=0 GOPATH=$(GOPATH) $(GO) build $<
 
 try-launching: try-launching.go $(CAPGOPACKAGE) ok
-	CGO_ENABLED="$(CGO_REQUIRED)" CGO_LDFLAGS_ALLOW="$(CGO_LDFLAGS_ALLOW)" GOPATH=$(GOPATH) $(GO) build $(GOBUILDTAG) $<
+	GO111MODULE=off CGO_ENABLED="$(CGO_REQUIRED)" CGO_LDFLAGS_ALLOW="$(CGO_LDFLAGS_ALLOW)" GOPATH=$(GOPATH) $(GO) build $<
 ifeq ($(CGO_REQUIRED),0)
-	CGO_ENABLED="1" CGO_LDFLAGS_ALLOW="$(CGO_LDFLAGS_ALLOW)" GOPATH=$(GOPATH) $(GO) build -o $@-cgo $<
+	GO111MODULE=off CGO_ENABLED="1" CGO_LDFLAGS_ALLOW="$(CGO_LDFLAGS_ALLOW)" GOPATH=$(GOPATH) $(GO) build -o $@-cgo $<
 endif
 
-test: all ../progs/capsh
-	CGO_LDFLAGS_ALLOW="$(CGO_LDFLAGS_ALLOW)" GOPATH="$(GOPATH)" $(GO) test $(IMPORTDIR)/psx
-	CGO_LDFLAGS_ALLOW="$(CGO_LDFLAGS_ALLOW)" GOPATH="$(GOPATH)" $(GO) test $(IMPORTDIR)/cap
+# Bug reported issues:
+#   https://bugzilla.kernel.org/show_bug.cgi?id=210533 (cgo - fixed)
+#   https://github.com/golang/go/issues/43149 (nocgo - not fixed yet)
+# When the latter is fixed we can replace CGO_ENABLED=1 with ="$(CGO_REQUIRED)"
+psx-signals: psx-signals.go  $(PSXGOPACKAGE)
+	GO111MODULE=off CGO_ENABLED=1 CGO_LDFLAGS_ALLOW="$(CGO_LDFLAGS_ALLOW)" CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" GOPATH=$(GOPATH) $(GO) build $<
+
+b210613: b210613.go $(CAPGOPACKAGE)
+	GO111MODULE=off CGO_ENABLED="$(CGO_REQUIRED)" CGO_LDFLAGS_ALLOW="$(CGO_LDFLAGS_ALLOW)" CGO_CFLAGS="$(CGO_CFLAGS)" CGO_LDFLAGS="$(CGO_LDFLAGS)" GOPATH=$(GOPATH) $(GO) build $<
+
+test: all
+	GO111MODULE=off CGO_ENABLED="$(CGO_REQUIRED)" CGO_LDFLAGS_ALLOW="$(CGO_LDFLAGS_ALLOW)" GOPATH="$(GOPATH)" $(GO) test $(IMPORTDIR)/psx
+	GO111MODULE=off CGO_ENABLED="$(CGO_REQUIRED)" CGO_LDFLAGS_ALLOW="$(CGO_LDFLAGS_ALLOW)" GOPATH="$(GOPATH)" $(GO) test $(IMPORTDIR)/cap
 	LD_LIBRARY_PATH=../libcap ./compare-cap
+	./psx-signals
+	./setid --caps=false
+	./gowns -- -c "echo gowns runs"
+
+# Note, the user namespace doesn't require sudo, but I wanted to avoid
+# requiring that the hosting kernel supports user namespaces for the
+# regular test case.
+sudotest: test ../progs/tcapsh-static b210613
+	./gowns --ns -- -c "echo gowns runs with user namespace"
 	./try-launching
 ifeq ($(CGO_REQUIRED),0)
 	./try-launching-cgo
 endif
-
-sudotest: test
 	sudo ./try-launching
 ifeq ($(CGO_REQUIRED),0)
 	sudo ./try-launching-cgo
 endif
+	sudo ../progs/tcapsh-static --cap-uid=$$(id -u) --caps="cap_setpcap=ep" --iab="^cap_setpcap" -- -c ./b210613
 
 install: all
 	rm -rf $(FAKEROOT)$(GOPKGDIR)/$(IMPORTDIR)/psx
-	mkdir -p $(FAKEROOT)$(GOPKGDIR)/$(IMPORTDIR)/psx/include/sys
-	for x in src/$(IMPORTDIR)/psx/* ; do if [ -d $$x ]; then continue; fi; install -m 0644 $$x $(FAKEROOT)$(GOPKGDIR)/$(IMPORTDIR)/psx; done
-	install -m 0644 src/$(IMPORTDIR)/psx/include/sys/psx_syscall.h $(FAKEROOT)$(GOPKGDIR)/$(IMPORTDIR)/psx/include/sys/psx_syscall.h
+	mkdir -p $(FAKEROOT)$(GOPKGDIR)/$(IMPORTDIR)/psx
+	install -m 0644 src/$(IMPORTDIR)/psx/* $(FAKEROOT)$(GOPKGDIR)/$(IMPORTDIR)/psx
 	mkdir -p $(FAKEROOT)$(GOPKGDIR)/$(IMPORTDIR)/cap
 	rm -rf $(FAKEROOT)$(GOPKGDIR)/$(IMPORTDIR)/cap/*
 	install -m 0644 src/$(IMPORTDIR)/cap/* $(FAKEROOT)$(GOPKGDIR)/$(IMPORTDIR)/cap
 
 clean:
-	rm -f *.o *.so *~ mknames web ok good-names.go
+	rm -f *.o *.so *~ mknames ok good-names.go
+	rm -f web setid gowns
 	rm -f compare-cap try-launching try-launching-cgo
 	rm -f $(topdir)/cap/*~ $(topdir)/psx/*~
+	rm -f psx-signals b210613
 	rm -fr pkg src
