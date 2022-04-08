@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997,2007-8,2020 Andrew G. Morgan <morgan@kernel.org>
+ * Copyright (c) 1997,2007-8 Andrew G. Morgan  <morgan@kernel.org>
  *
  * This sets/verifies the capabilities of a given file.
  */
@@ -11,24 +11,15 @@
 #include <sys/capability.h>
 #include <unistd.h>
 
-static void usage(int status)
+static void usage(void)
 {
     fprintf(stderr,
-	    "usage: setcap [-h] [-q] [-v] [-n <rootid>] (-r|-|<caps>) <filename> "
+	    "usage: setcap [-q] [-v] (-r|-|<caps>) <filename> "
 	    "[ ... (-r|-|<capsN>) <filenameN> ]\n"
 	    "\n"
 	    " Note <filename> must be a regular (non-symlink) file.\n"
-	    " -r          remove capability from file\n"
-	    " -           read capability text from stdin\n"
-	    " <capsN>     cap_from_text(3) formatted file capability\n"
-	    "\n"
-	    " -h          this message and exit status 0\n"
-	    " -q          quietly\n"
-	    " -v          validate supplied capability matches file\n"
-	    " -n <rootid> write a user namespace limited capability\n"
-	    " --license   display the license info\n"
 	);
-    exit(status);
+    exit(1);
 }
 
 #define MAXCAP  2048
@@ -69,13 +60,12 @@ int main(int argc, char **argv)
 {
     int tried_to_cap_setfcap = 0;
     char buffer[MAXCAP+1];
-    int retval, quiet = 0, verify = 0;
+    int retval, quiet=0, verify=0;
     cap_t mycaps;
     cap_value_t capflag;
-    uid_t rootid = 0, f_rootid;
 
-    if (argc < 2) {
-	usage(1);
+    if (argc < 3) {
+	usage();
     }
 
     mycaps = cap_get_proc();
@@ -92,31 +82,8 @@ int main(int argc, char **argv)
 	    quiet = 1;
 	    continue;
 	}
-	if (!strcmp("--license", *argv)) {
-	    printf(
-		"%s has a you choose license: BSD 3-clause or GPL2\n"
-		"Copyright (c) 1997,2007-8,2020 Andrew G. Morgan"
-		" <morgan@kernel.org>\n", argv[0]);
-	    exit(0);
-	}
-	if (!strcmp(*argv, "-h")) {
-	    usage(0);
-	}
 	if (!strcmp(*argv, "-v")) {
 	    verify = 1;
-	    continue;
-	}
-	if (!strcmp(*argv, "-n")) {
-	    if (argc < 2) {
-		fprintf(stderr, "usage: .. -n <rootid> .. - rootid!=0 file caps");
-		exit(1);
-	    }
-	    --argc;
-	    rootid = (uid_t) atoi(*++argv);
-	    if (rootid+1 < 2) {
-		fprintf(stderr, "invalid rootid!=0 of '%s'", *argv);
-		exit(1);
-	    }
 	    continue;
 	}
 
@@ -126,7 +93,7 @@ int main(int argc, char **argv)
 	    if (!strcmp(*argv,"-")) {
 		retval = read_caps(quiet, *argv, buffer);
 		if (retval)
-		    usage(1);
+		    usage();
 		text = buffer;
 	    } else {
 		text = *argv;
@@ -135,11 +102,7 @@ int main(int argc, char **argv)
 	    cap_d = cap_from_text(text);
 	    if (cap_d == NULL) {
 		perror("fatal error");
-		usage(1);
-	    }
-	    if (cap_set_nsowner(cap_d, rootid)) {
-		perror("unable to set nsowner");
-		exit(1);
+		usage();
 	    }
 #ifdef DEBUG
 	    {
@@ -153,7 +116,7 @@ int main(int argc, char **argv)
 	}
 
 	if (--argc <= 0)
-	    usage(1);
+	    usage();
 	/*
 	 * Set the filesystem capability for this file.
 	 */
@@ -172,14 +135,10 @@ int main(int argc, char **argv)
 	    }
 
 	    cmp = cap_compare(cap_on_file, cap_d);
-	    f_rootid = cap_get_nsowner(cap_on_file);
 	    cap_free(cap_on_file);
 
-	    if (cmp != 0 || rootid != f_rootid) {
+	    if (cmp != 0) {
 		if (!quiet) {
-		    if (rootid != f_rootid) {
-			printf("nsowner[got=%d, want=%d],", f_rootid, rootid);
-		    }
 		    printf("%s differs in [%s%s%s]\n", *argv,
 			   CAP_DIFFERS(cmp, CAP_PERMITTED) ? "p" : "",
 			   CAP_DIFFERS(cmp, CAP_INHERITABLE) ? "i" : "",
@@ -213,7 +172,6 @@ int main(int argc, char **argv)
 	    if (retval != 0) {
 		int explained = 0;
 		int oerrno = errno;
-		int somebits = 0;
 #ifdef linux
 		cap_value_t cap;
 		cap_flag_value_t per_state;
@@ -221,28 +179,24 @@ int main(int argc, char **argv)
 		for (cap = 0;
 		     cap_get_flag(cap_d, cap, CAP_PERMITTED, &per_state) != -1;
 		     cap++) {
-		    cap_flag_value_t inh_state, eff_state, combined;
+		    cap_flag_value_t inh_state, eff_state;
 
 		    cap_get_flag(cap_d, cap, CAP_INHERITABLE, &inh_state);
 		    cap_get_flag(cap_d, cap, CAP_EFFECTIVE, &eff_state);
-		    combined = (inh_state | per_state);
-		    somebits |= !!eff_state;
-		    if (combined != eff_state) {
+		    if ((inh_state | per_state) != eff_state) {
+			fprintf(stderr, "NOTE: Under Linux, effective file capabilities must either be empty, or\n"
+				"      exactly match the union of selected permitted and inheritable bits.\n");
 			explained = 1;
 			break;
 		    }
 		}
-		if (somebits && explained) {
-		    fprintf(stderr, "NOTE: Under Linux, effective file capabilities must either be empty, or\n"
-			    "      exactly match the union of selected permitted and inheritable bits.\n");
-		}
 #endif /* def linux */
-
+		
 		fprintf(stderr,
 			"Failed to set capabilities on file `%s' (%s)\n",
 			argv[0], strerror(oerrno));
 		if (!explained) {
-		    usage(1);
+		    usage();
 		}
 	    }
 	}

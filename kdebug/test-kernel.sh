@@ -13,8 +13,7 @@ function die {
 }
 
 pushd ..
-make test || die "failed to make test of libcap tree"
-make -C progs tcapsh-static || die "failed to make progs/tcapsh-static"
+make || die "failed to make libcap tree"
 popd
 
 # Assumes desired make *config (eg. make defconfig) is already done.
@@ -46,16 +45,9 @@ file /root/setcap $HERE/../progs/setcap 0755 0 0
 file /root/getcap $HERE/../progs/getcap 0755 0 0
 file /root/capsh $HERE/../progs/capsh 0755 0 0
 file /root/getpcaps $HERE/../progs/getpcaps 0755 0 0
-file /root/tcapsh-static $HERE/../progs/tcapsh-static 0755 0 0
 EOF
 
-# convenience for some local experiments
-if [ -f "$HERE/extras.sh" ]; then
-    echo "local, uncommitted enhancements to kernel test"
-    . "$HERE/extras.sh"
-fi
-
-COMMANDS="awk cat chmod cp dmesg fgrep id less ln ls mkdir mount pwd rm rmdir sh sort umount uniq vi"
+COMMANDS="ls ln cp id pwd mkdir rmdir cat rm sh mount umount chmod less"
 for f in $COMMANDS; do
     echo slink /bin/$f /sbin/busybox 0755 0 0 >> fs.conf
 done
@@ -67,10 +59,9 @@ done
 
 $KBASE/usr/gen_init_cpio fs.conf | gzip -9 > initramfs.img
 
-KERNEL=$KBASE/arch/$(uname -m)/boot/bzImage
+KERNEL=$KBASE/arch/x86_64/boot/bzImage
 
 qemu-system-$(uname -m) -m 1024 \
 		   -kernel $KERNEL \
 		   -initrd initramfs.img \
-		   -append "$APPEND" \
-		   -smp sockets=2,dies=1,cores=4
+		   -append "$APPEND"
