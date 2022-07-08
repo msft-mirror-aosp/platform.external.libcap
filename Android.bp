@@ -84,6 +84,8 @@ cc_library {
     apex_available: [
         "//apex_available:platform",
         "com.android.adbd",
+        "com.android.art",
+        "com.android.art.debug",
         "com.android.compos",
         "com.android.media.swcodec",
         "com.android.virt",
