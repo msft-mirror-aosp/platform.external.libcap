@@ -3,7 +3,7 @@ description: "This is a library for getting and setting POSIX.1e (formerly POSIX
 third_party {
   url {
     type: GIT
-    value: "https://git.kernel.org/pub/scm/linux/kernel/git/morgan/libcap.git"
+    value: "https://git.kernel.org/pub/scm/libs/libcap/libcap.git"
   }
   version: "libcap-2.53"
   license_type: NOTICE
