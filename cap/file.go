@@ -50,7 +50,7 @@ type vfsCaps3 struct {
 	RootID uint32
 }
 
-// ErrBadSize indicates the the loaded file capability has
+// ErrBadSize indicates the loaded file capability has
 // an invalid number of bytes in it.
 var ErrBadSize = errors.New("filecap bad size")
 
@@ -164,6 +164,8 @@ func (c *Set) GetNSOwner() (int, error) {
 	if magic < kv3 {
 		return 0, ErrBadMagic
 	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.nsRoot, nil
 }
 
@@ -187,6 +189,9 @@ func (c *Set) SetNSOwner(uid int) {
 // attributes, the process is a little lossy with respect to effective
 // bits.
 func (c *Set) packFileCap() ([]byte, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	var magic uint32
 	switch words {
 	case 1:
@@ -229,20 +234,22 @@ func (c *Set) packFileCap() ([]byte, error) {
 // (*os.File).Fd(). This function can also be used to delete a file's
 // capabilities, by calling with c = nil.
 //
-// Note, Linux does not store the full Effective Value Flag in the
-// metadata for the file. Only a single Effective bit is stored in
-// this metadata. This single bit is non-zero if the Effective vector
-// has any overlapping bits with the Permitted or Inheritable vector
-// of c. This may appear suboptimal, but the reasoning behind it is
-// sound. Namely, the purpose of the Effective bit it to support
-// capabability unaware binaries that will only work if they magically
-// launch with the needed bits already raised (this bit is sometimes
-// referred to simply as the 'legacy' bit). Without *full* support for
-// capability manipulation, as it is provided in this "../libcap/cap"
-// package, this was the only way for Go programs to make use of
+// Note, Linux does not store the full Effective Flag in the metadata
+// for the file. Only a single Effective bit is stored in this
+// metadata. This single bit is non-zero if the Effective Flag has any
+// overlapping bits with the Permitted or Inheritable Flags of c. This
+// may appear suboptimal, but the reasoning behind it is sound.
+// Namely, the purpose of the Effective bit it to support capabability
+// unaware binaries that will only work if they magically launch with
+// the needed Values already raised (this bit is sometimes referred to
+// simply as the 'legacy' bit).
+//
+// Historical note: without *full* support for runtime capability
+// manipulation, as it is provided in this "../libcap/cap" package,
+// this was previously the only way for Go programs to make use of
 // file capabilities.
 //
-// The preferred way a binary will actually manipulate its
+// The preferred way that a binary will actually manipulate its
 // file-acquired capabilities is to carefully and deliberately use
 // this package (or libcap, assisted by libpsx, for threaded C/C++
 // family code).
@@ -253,8 +260,8 @@ func (c *Set) SetFd(file *os.File) error {
 		}
 		return nil
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	d, err := c.packFileCap()
 	if err != nil {
 		return err
@@ -272,7 +279,7 @@ func (c *Set) SetFd(file *os.File) error {
 // capabilities, by calling with c = nil.
 //
 // Note, see the comment for SetFd() for some non-obvious behavior of
-// Linux for the Effective Value vector on the modified file.
+// Linux for the Effective Flag on the modified file.
 func (c *Set) SetFile(path string) error {
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -295,8 +302,8 @@ func (c *Set) SetFile(path string) error {
 		}
 		return nil
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	d, err := c.packFileCap()
 	if err != nil {
 		return err
@@ -348,11 +355,11 @@ func Import(d []byte) (*Set, error) {
 	return c, nil
 }
 
-// To strictly match libcap, this value defaults to 8. Setting it to
-// zero can generate smaller external representations. Such smaller
-// representations can be imported by libcap and the Go package just
-// fine, we just default to the default libcap representation for
-// legacy reasons.
+// MinExtFlagSize defaults to 8 in order to be equivalent to libcap
+// defaults. Setting it to zero can generate smaller external
+// representations. Such smaller representations can be imported by
+// libcap and the Go package just fine, we just default to the default
+// libcap representation for legacy reasons.
 var MinExtFlagSize = uint(8)
 
 // Export exports a Set into a lossless byte array format where it is
@@ -362,16 +369,16 @@ var MinExtFlagSize = uint(8)
 // Note, Export() generates exported byte streams that are importable
 // by libcap.cap_copy_int() as well as Import().
 func (c *Set) Export() ([]byte, error) {
-	if c == nil {
-		return nil, ErrBadSet
+	if err := c.good(); err != nil {
+		return nil, err
 	}
 	if MinExtFlagSize > 255 {
 		return nil, ErrOutOfRange
 	}
 	b := new(bytes.Buffer)
 	binary.Write(b, binary.LittleEndian, ExtMagic)
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	var n = uint(0)
 	for i, f := range c.flat {
 		if nn := 4 * uint(i); nn+4 > n {

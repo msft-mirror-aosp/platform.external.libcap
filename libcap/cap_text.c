@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997-8,2007-8,2019 Andrew G Morgan <morgan@kernel.org>
+ * Copyright (c) 1997-8,2007-8,2019,2021 Andrew G Morgan <morgan@kernel.org>
  * Copyright (c) 1997 Andrew Main <zefram@dcs.warwick.ac.uk>
  *
  * This file deals with exchanging internal and textual
@@ -100,7 +100,7 @@ static int lookupname(char const **strp)
 	return n;
     } else {
 	int c;
-	unsigned len;
+	size_t len;
 
 	for (len=0; (c = str.constp[len]); ++len) {
 	    if (!(isalpha(c) || (c == '_'))) {
@@ -160,6 +160,7 @@ cap_t cap_from_text(const char *str)
 	cap_blks = _LINUX_CAPABILITY_U32S_3;
 	break;
     default:
+	cap_free(res);
 	errno = EINVAL;
 	return NULL;
     }
@@ -219,7 +220,7 @@ cap_t cap_from_text(const char *str)
 
 	/* cycle through list of actions */
 	do {
-	    _cap_debug("next char = `%c'", *str);
+	    _cap_debug("next char = '%c'", *str);
 	    if (*str && !isspace(*str)) {
 		switch (*str++) {    /* Effective, Inheritable, Permitted */
 		case 'e':
@@ -309,20 +310,19 @@ int cap_from_name(const char *name, cap_value_t *value_p)
  */
 char *cap_to_name(cap_value_t cap)
 {
-    if ((cap < 0) || (cap >= __CAP_BITS)) {
-#if UINT_MAX != 4294967295U
-# error Recompile with correctly sized numeric array
-#endif
-	char *tmp, *result;
+    char *tmp, *result;
 
-	(void) asprintf(&tmp, "%u", cap);
-	result = _libcap_strdup(tmp);
-	free(tmp);
-
-	return result;
-    } else {
+    if ((cap >= 0) && (cap < __CAP_BITS)) {
 	return _libcap_strdup(_cap_names[cap]);
     }
+    if (asprintf(&tmp, "%u", cap) <= 0) {
+	_cap_debug("asprintf filed");
+	return NULL;
+    }
+
+    result = _libcap_strdup(tmp);
+    free(tmp);
+    return result;
 }
 
 /*
@@ -348,6 +348,12 @@ static int getstateflags(cap_t caps, int capno)
     return f;
 }
 
+/*
+ * This code assumes that the longest named capability is longer than
+ * the decimal text representation of __CAP_MAXBITS. This is very true
+ * at the time of writing and likely to remain so. However, we have
+ * a test in cap_text to validate it at build time.
+ */
 #define CAP_TEXT_BUFFER_ZONE 100
 
 char *cap_to_text(cap_t caps, ssize_t *length_p)
@@ -398,6 +404,9 @@ char *cap_to_text(cap_t caps, ssize_t *length_p)
 	for (n = 0; n < cmb; n++) {
 	    if (getstateflags(caps, n) == t) {
 	        char *this_cap_name = cap_to_name(n);
+		if (this_cap_name == NULL) {
+		    return NULL;
+		}
 	        if ((strlen(this_cap_name) + (p - buf)) > CAP_TEXT_SIZE) {
 		    cap_free(this_cap_name);
 		    errno = ERANGE;
@@ -450,6 +459,9 @@ char *cap_to_text(cap_t caps, ssize_t *length_p)
 	for (n = cmb; n < __CAP_MAXBITS; n++) {
 	    if (getstateflags(caps, n) == t) {
 		char *this_cap_name = cap_to_name(n);
+		if (this_cap_name == NULL) {
+		    return NULL;
+		}
 	        if ((strlen(this_cap_name) + (p - buf)) > CAP_TEXT_SIZE) {
 		    cap_free(this_cap_name);
 		    errno = ERANGE;
@@ -491,6 +503,8 @@ const char *cap_mode_name(cap_mode_t flavor) {
 	return "PURE1E";
     case CAP_MODE_UNCERTAIN:
 	return "UNCERTAIN";
+    case CAP_MODE_HYBRID:
+	return "HYBRID";
     default:
 	return "UNKNOWN";
     }
@@ -508,6 +522,7 @@ char *cap_iab_to_text(cap_iab_t iab)
     int first = 1;
 
     if (good_cap_iab_t(iab)) {
+	_cap_mu_lock(&iab->mutex);
 	for (c = 0; c < cmb; c++) {
 	    int keep = 0;
 	    int o = c >> 5;
@@ -541,6 +556,7 @@ char *cap_iab_to_text(cap_iab_t iab)
 		first = 0;
 	    }
 	}
+	_cap_mu_unlock(&iab->mutex);
     }
     *p = '\0';
     return _libcap_strdup(buf);
@@ -549,6 +565,9 @@ char *cap_iab_to_text(cap_iab_t iab)
 cap_iab_t cap_iab_from_text(const char *text)
 {
     cap_iab_t iab = cap_iab_init();
+    if (iab == NULL) {
+	return iab;
+    }
     if (text != NULL) {
 	unsigned flags;
 	for (flags = 0; *text; text++) {
@@ -603,4 +622,149 @@ cleanup:
     cap_free(iab);
     errno = EINVAL;
     return NULL;
+}
+
+static __u32 _parse_hex32(const char *c)
+{
+    int i;
+    __u32 v = 0;
+    for (i=0; i < 8; i++, c++) {
+	v <<= 4;
+	if (*c == 0 || *c < '0') {
+	    return 0;
+	} else if (*c <= '9') {
+	    v += *c - '0';
+	} else if (*c > 'f') {
+	    return 0;
+	} else if (*c >= 'a') {
+	    v += *c + 10 - 'a';
+	} else if (*c < 'A') {
+	    return 0;
+	} else if (*c <= 'F') {
+	    v += *c + 10 - 'A';
+	} else {
+	    return 0;
+	}
+    }
+    return v;
+}
+
+/*
+ * _parse_vec_string converts the hex dumps in /proc/<pid>/current into
+ * an array of u32s - masked as per the forceall() mask.
+ */
+static __u32 _parse_vec_string(__u32 *vals, const char *c, int invert)
+{
+    int i;
+    int words = strlen(c)/8;
+    if (words > _LIBCAP_CAPABILITY_U32S) {
+	return 0;
+    }
+    forceall(vals, ~0, words);
+    for (i = 0; i < words; i++) {
+	__u32 val = _parse_hex32(c+8*(words-1-i));
+	if (invert) {
+	    val = ~val;
+	}
+	vals[i] &= val;
+    }
+    return ~0;
+}
+
+/*
+ * libcap believes this is the root of the mounted "/proc"
+ * filesystem. (NULL == "/proc".)
+ */
+static char *_cap_proc_dir;
+
+/*
+ * If the constructor is called (see cap_alloc.c) then we'll need the
+ * corresponding destructor.
+ */
+__attribute__((destructor (300))) static void _cleanup_libcap(void)
+{
+    if (_cap_proc_dir == NULL) {
+	return;
+    }
+    cap_free(_cap_proc_dir);
+    _cap_proc_dir = NULL;
+}
+
+/*
+ * cap_proc_root reads and (optionally: when root != NULL) changes
+ * libcap's notion of where the "/proc" filesystem is mounted. It
+ * defaults to the value "/proc". Note, this is a global value and not
+ * considered thread safe to write - so the client should take
+ * suitable care when changing it. Further, libcap will allocate
+ * memory for storing the replacement root, and it is this memory that
+ * is returned. So, when changing the value, the caller should
+ * cap_free(the-return-value) when done with it.
+ *
+ * A return value of NULL implies the default is in effect "/proc".
+ */
+char *cap_proc_root(const char *root)
+{
+    char *old = _cap_proc_dir;
+    if (root != NULL) {
+	_cap_proc_dir = _libcap_strdup(root);
+    }
+    return old;
+}
+
+#define PROC_LINE_MAX (8 + 8*_LIBCAP_CAPABILITY_U32S + 100)
+/*
+ * cap_iab_get_pid fills an IAB tuple from the content of
+ * /proc/<pid>/status. Linux doesn't support syscall access to the
+ * needed information, so we parse it out of that file.
+ */
+cap_iab_t cap_iab_get_pid(pid_t pid)
+{
+    cap_iab_t iab;
+    char *path;
+    FILE *file;
+    char line[PROC_LINE_MAX];
+    const char *proc_root = _cap_proc_dir;
+
+    if (proc_root == NULL) {
+	proc_root = "/proc";
+    }
+    if (asprintf(&path, "%s/%d/status", proc_root, pid) <= 0) {
+	return NULL;
+    }
+    file = fopen(path, "r");
+    free(path);
+    if (file == NULL) {
+	return NULL;
+    }
+
+    iab = cap_iab_init();
+    uint ok = 0;
+    if (iab != NULL) {
+	while (fgets(line, PROC_LINE_MAX-1, file) != NULL) {
+	    if (strncmp("Cap", line, 3) != 0) {
+		continue;
+	    }
+	    if (strncmp("Inh:\t", line+3, 5) == 0) {
+		ok = (_parse_vec_string(iab->i, line+8, 0) &
+		    LIBCAP_IAB_I_FLAG) | ok;
+		continue;
+	    }
+	    if (strncmp("Bnd:\t", line+3, 5) == 0) {
+		ok = (_parse_vec_string(iab->nb, line+8, 1) &
+		      LIBCAP_IAB_NB_FLAG) | ok;
+		continue;
+	    }
+	    if (strncmp("Amb:\t", line+3, 5) == 0) {
+		ok = (_parse_vec_string(iab->a, line+8, 0) &
+		      LIBCAP_IAB_A_FLAG) | ok;
+		continue;
+	    }
+	}
+    }
+    if (ok != (LIBCAP_IAB_IA_FLAG | LIBCAP_IAB_NB_FLAG)) {
+	cap_free(iab);
+	iab = NULL;
+    }
+    fclose(file);
+    return iab;
 }
