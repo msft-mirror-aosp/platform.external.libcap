@@ -116,16 +116,18 @@ func tryFileCaps() {
 	if err := want.SetFd(f); err != nil {
 		log.Fatalf("failed to fset file capability: %v", err)
 	}
-	if err := saved.SetProc(); err != nil {
-		log.Fatalf("failed to lower effective capability: %v", err)
-	}
-	// End of critical section.
-
 	if got, err := cap.GetFd(f); err != nil {
 		log.Fatalf("failed to fread caps: %v", err)
 	} else if is, was := got.String(), want.String(); is != was {
 		log.Fatalf("fread file caps do not match desired: got=%q want=%q", is, was)
 	}
+	if err := empty.SetFd(f); err != nil && err != syscall.ENODATA {
+		log.Fatalf("blocked from cleanup fremoving filecaps: %v", err)
+	}
+	if err := saved.SetProc(); err != nil {
+		log.Fatalf("failed to lower effective capability: %v", err)
+	}
+	// End of critical section.
 }
 
 // tryProcCaps performs a set of convenience functions and compares
@@ -158,8 +160,8 @@ func tryProcCaps() {
 		log.Fatalf("wrong of groups: got=%v want=[100 l01]", gs)
 	}
 
-	if mode := cap.GetMode(); mode != cap.ModeUncertain {
-		log.Fatalf("initial mode should be 0 (UNCERTAIN), got: %d (%v)", mode, mode)
+	if mode := cap.GetMode(); mode != cap.ModeHybrid {
+		log.Fatalf("initial mode should be 4 (HYBRID), got: %d (%v)", mode, mode)
 	}
 
 	// To distinguish PURE1E and PURE1E_INIT we need an inheritable capability set.

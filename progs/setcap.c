@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997,2007-8,2020 Andrew G. Morgan <morgan@kernel.org>
+ * Copyright (c) 1997,2007-8,2020,21 Andrew G. Morgan <morgan@kernel.org>
  *
  * This sets/verifies the capabilities of a given file.
  */
@@ -21,17 +21,47 @@ static void usage(int status)
 	    " -r          remove capability from file\n"
 	    " -           read capability text from stdin\n"
 	    " <capsN>     cap_from_text(3) formatted file capability\n"
+	    " [ Note: capsh --suggest=\"something...\" might help you pick. ]"
 	    "\n"
 	    " -h          this message and exit status 0\n"
 	    " -q          quietly\n"
 	    " -v          validate supplied capability matches file\n"
-	    " -n <rootid> write a user namespace limited capability\n"
+	    " -n <rootid> write a user namespace (!= 0) limited capability\n"
 	    " --license   display the license info\n"
 	);
     exit(status);
 }
 
-#define MAXCAP  2048
+/* parse a positive integer with some error handling */
+static unsigned long pos_uint(const char *text, const char *prefix, int *ok)
+{
+    char *remains;
+    unsigned long value;
+    ssize_t len = strlen(text);
+
+    if (len == 0 || *text == '-') {
+	goto fail;
+    }
+    value = strtoul(text, &remains, 0);
+    if (*remains || value == 0) {
+	goto fail;
+    }
+    if (ok != NULL) {
+	*ok = 1;
+    }
+    return value;
+
+fail:
+    if (ok == NULL) {
+	fprintf(stderr, "%s: want positive integer, got \"%s\"\n",
+		prefix, text);
+	exit(1);
+    }
+    *ok = 0;
+    return 0;
+}
+
+#define MAXCAP 2048
 
 static int read_caps(int quiet, const char *filename, char *buffer)
 {
@@ -84,9 +114,12 @@ int main(int argc, char **argv)
 		" (old libcap?)\n");
     }
 
+    cap_t cap_d = NULL;
     while (--argc > 0) {
 	const char *text;
-	cap_t cap_d;
+
+	cap_free(cap_d);
+	cap_d = NULL;
 
 	if (!strcmp(*++argv, "-q")) {
 	    quiet = 1;
@@ -95,7 +128,7 @@ int main(int argc, char **argv)
 	if (!strcmp("--license", *argv)) {
 	    printf(
 		"%s see LICENSE file for details.\n"
-		"Copyright (c) 1997,2007-8,2020 Andrew G. Morgan"
+		"Copyright (c) 1997,2007-8,2020-21 Andrew G. Morgan"
 		" <morgan@kernel.org>\n", argv[0]);
 	    exit(0);
 	}
@@ -108,19 +141,17 @@ int main(int argc, char **argv)
 	}
 	if (!strcmp(*argv, "-n")) {
 	    if (argc < 2) {
-		fprintf(stderr, "usage: .. -n <rootid> .. - rootid!=0 file caps");
+		fprintf(stderr,
+			"usage: .. -n <rootid> .. - rootid!=0 file caps");
 		exit(1);
 	    }
 	    --argc;
-	    rootid = (uid_t) atoi(*++argv);
-	    if (rootid+1 < 2) {
-		fprintf(stderr, "invalid rootid!=0 of '%s'", *argv);
-		exit(1);
-	    }
+	    rootid = (uid_t) pos_uint(*++argv, "bad ns rootid", NULL);
 	    continue;
 	}
 
 	if (!strcmp(*argv, "-r")) {
+	    cap_free(cap_d);
 	    cap_d = NULL;
 	} else {
 	    if (!strcmp(*argv,"-")) {
@@ -143,11 +174,9 @@ int main(int argc, char **argv)
 	    }
 #ifdef DEBUG
 	    {
-		ssize_t length;
-		const char *result;
-
-		result = cap_to_text(cap_d, &length);
+		char *result = cap_to_text(cap_d, NULL);
 		fprintf(stderr, "caps set to: [%s]\n", result);
+		cap_free(result);
 	    }
 #endif
 	}
@@ -162,13 +191,20 @@ int main(int argc, char **argv)
 	    int cmp;
 
 	    if (cap_d == NULL) {
-		cap_d = cap_from_text("=");
+		cap_d = cap_init();
+		if (cap_d == NULL) {
+		    perror("unable to obtain empty capability");
+		    exit(1);
+		}
 	    }
 
 	    cap_on_file = cap_get_file(*++argv);
-
 	    if (cap_on_file == NULL) {
-		cap_on_file = cap_from_text("=");
+		cap_on_file = cap_init();
+		if (cap_on_file == NULL) {
+		    perror("unable to use missing capability");
+		    exit(1);
+		}
 	    }
 
 	    cmp = cap_compare(cap_on_file, cap_d);
@@ -238,17 +274,31 @@ int main(int argc, char **argv)
 		}
 #endif /* def linux */
 
-		fprintf(stderr,
-			"Failed to set capabilities on file `%s' (%s)\n",
-			argv[0], strerror(oerrno));
-		if (!explained) {
-		    usage(1);
+		switch (oerrno) {
+		case EINVAL:
+		    fprintf(stderr,
+			    "Invalid file '%s' for capability operation\n",
+			    argv[0]);
+		    exit(1);
+		case ENODATA:
+		    if (cap_d == NULL) {
+			fprintf(stderr,
+				"File '%s' has no capablity to remove\n",
+				argv[0]);
+			exit(1);
+		    }
+		    /* FALLTHROUGH */
+		default:
+		    fprintf(stderr,
+			    "Failed to set capabilities on file '%s': %s\n",
+			    argv[0], strerror(oerrno));
+		    exit(1);
 		}
 	    }
 	}
-	if (cap_d) {
-	    cap_free(cap_d);
-	}
+    }
+    if (cap_d) {
+	cap_free(cap_d);
     }
 
     exit(0);
