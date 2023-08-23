@@ -29,6 +29,26 @@
 
 #include "psx_syscall.h"
 
+#ifdef _PSX_DEBUG_MEMORY
+
+static void *_psx_calloc(const char *file, const int line,
+			 size_t nmemb, size_t size) {
+    void *ptr = calloc(nmemb, size);
+    fprintf(stderr, "psx:%d:%s:%d: calloc(%ld, %ld) -> %p\n", gettid(),
+	    file, line, (long int)nmemb, (long int)size, ptr);
+    return ptr;
+}
+
+static void _psx_free(const char *file, const int line, void *ptr) {
+    fprintf(stderr, "psx:%d:%s:%d: free(%p)\n", gettid(), file, line, ptr);
+    return free(ptr);
+}
+
+#define calloc(a, b)  _psx_calloc(__FILE__, __LINE__, a, b)
+#define free(a)       _psx_free(__FILE__, __LINE__, a)
+
+#endif /* def _PSX_DEBUG_MEMORY */
+
 /*
  * psx_load_syscalls() can be weakly defined in dependent libraries to
  * provide a mechanism for a library to optionally leverage this psx
@@ -56,6 +76,8 @@ typedef struct registered_thread_s {
     pthread_mutex_t mu;
     int pending;
     int gone;
+    long int retval;
+    pid_t tid;
 } registered_thread_t;
 
 static pthread_once_t psx_tracker_initialized = PTHREAD_ONCE_INIT;
@@ -81,6 +103,7 @@ static struct psx_tracker_s {
     psx_tracker_state_t state;
     int initialized;
     int psx_sig;
+    psx_sensitivity_t sensitivity;
 
     struct {
 	long syscall_nr;
@@ -107,6 +130,10 @@ pthread_key_t psx_action_key;
  */
 static void *psx_do_registration(void) {
     registered_thread_t *node = calloc(1, sizeof(registered_thread_t));
+    if (node == NULL) {
+	perror("unable to register psx handler");
+	_exit(1);
+    }
     pthread_mutex_init(&node->mu, NULL);
     node->thread = pthread_self();
     pthread_setspecific(psx_action_key, node);
@@ -132,19 +159,20 @@ static void psx_posix_syscall_actor(int signum, siginfo_t *info, void *ignore) {
 	return;
     }
 
+    long int retval;
     if (!psx_tracker.cmd.six) {
-	(void) syscall(psx_tracker.cmd.syscall_nr,
-		       psx_tracker.cmd.arg1,
-		       psx_tracker.cmd.arg2,
-		       psx_tracker.cmd.arg3);
+	retval = syscall(psx_tracker.cmd.syscall_nr,
+			 psx_tracker.cmd.arg1,
+			 psx_tracker.cmd.arg2,
+			 psx_tracker.cmd.arg3);
     } else {
-	(void) syscall(psx_tracker.cmd.syscall_nr,
-		       psx_tracker.cmd.arg1,
-		       psx_tracker.cmd.arg2,
-		       psx_tracker.cmd.arg3,
-		       psx_tracker.cmd.arg4,
-		       psx_tracker.cmd.arg5,
-		       psx_tracker.cmd.arg6);
+	retval = syscall(psx_tracker.cmd.syscall_nr,
+			 psx_tracker.cmd.arg1,
+			 psx_tracker.cmd.arg2,
+			 psx_tracker.cmd.arg3,
+			 psx_tracker.cmd.arg4,
+			 psx_tracker.cmd.arg5,
+			 psx_tracker.cmd.arg6);
     }
 
     /*
@@ -156,6 +184,8 @@ static void psx_posix_syscall_actor(int signum, siginfo_t *info, void *ignore) {
     if (ref) {
 	pthread_mutex_lock(&ref->mu);
 	ref->pending = 0;
+	ref->retval = retval;
+	ref->tid = syscall(SYS_gettid);
 	pthread_mutex_unlock(&ref->mu);
     } /*
        * else thread must be dying and its psx_action_key has already
@@ -167,6 +197,7 @@ static void psx_posix_syscall_actor(int signum, siginfo_t *info, void *ignore) {
  * Some forward declarations for the initialization
  * psx_syscall_start() routine.
  */
+static void _psx_cleanup(void);
 static void _psx_prepare_fork(void);
 static void _psx_fork_completed(void);
 static void _psx_forked_child(void);
@@ -230,6 +261,7 @@ static void psx_syscall_start(void) {
 
     psx_confirm_sigaction();
     psx_do_registration(); /* register the main thread. */
+    atexit(_psx_cleanup);
 
     psx_tracker.initialized = 1;
 }
@@ -255,7 +287,9 @@ static void psx_unlock(void)
 }
 
 /*
- * under lock perform a state transition.
+ * under lock perform a state transition. Changing state is generally
+ * done via this function. However, there is a single exception in
+ * _psx_cleanup().
  */
 static void psx_new_state(psx_tracker_state_t was, psx_tracker_state_t is)
 {
@@ -319,7 +353,7 @@ static void _psx_forked_child(void) {
      *
      * We do this because the glibc man page for fork() suggests that
      * only a subset of things will work post fork(). Specifically,
-     * only a "async-signal-safe functions (see signal- safety(7))
+     * only a "async-signal-safe functions (see signal-safety(7))
      * until such time as it calls execve(2)" can be relied upon. That
      * man page suggests that you can't expect mutexes to work: "not
      * async-signal-safe because it uses pthread_mutex_lock(3)
@@ -410,7 +444,7 @@ static void _psx_exiting(void *node) {
     pthread_sigmask(SIG_SETMASK, &orig_sigbits, NULL);
 
     /*
-     * Allow the rest of the psx system carry on as per normal.
+     * Allow the rest of the psx system to carry on as per normal.
      */
     psx_new_state(_PSX_EXITING, _PSX_IDLE);
 }
@@ -482,7 +516,7 @@ int __wrap_pthread_create(pthread_t *thread, const pthread_attr_t *attr,
     pthread_sigmask(SIG_BLOCK, &sigbit, NULL);
 
     int ret = __real_pthread_create(thread, attr, _psx_start_fn, starter);
-    if (ret == -1) {
+    if (ret > 0) {
 	psx_new_state(_PSX_CREATE, _PSX_IDLE);
 	memset(starter, 0, sizeof(*starter));
 	free(starter);
@@ -603,6 +637,7 @@ long int __psx_syscall(long int syscall_nr, ...) {
     }
     psx_unlock();
 
+    int mismatch = 0;
     for (;;) {
 	int waiting = 0;
 	psx_lock();
@@ -615,8 +650,12 @@ long int __psx_syscall(long int syscall_nr, ...) {
 	    pthread_mutex_lock(&ref->mu);
 	    int pending = ref->pending;
 	    int gone = ref->gone;
-	    if (pending && !gone) {
-		gone = (pthread_kill(ref->thread, 0) != 0);
+	    if (!gone) {
+		if (pending) {
+		    gone = (pthread_kill(ref->thread, 0) != 0);
+		} else {
+		    mismatch |= (ref->retval != ret);
+		}
 	    }
 	    pthread_mutex_unlock(&ref->mu);
 	    if (!gone) {
@@ -635,10 +674,92 @@ long int __psx_syscall(long int syscall_nr, ...) {
 	sched_yield();
     }
 
-    errno = restore_errno;
     psx_tracker.cmd.active = 0;
+    if (mismatch) {
+	psx_lock();
+	switch (psx_tracker.sensitivity) {
+	case PSX_IGNORE:
+	    break;
+	default:
+	    fprintf(stderr, "psx_syscall result differs.\n");
+	    if (psx_tracker.cmd.six) {
+		fprintf(stderr, "trap:%ld a123456=[%ld,%ld,%ld,%ld,%ld,%ld]\n",
+			psx_tracker.cmd.syscall_nr,
+			psx_tracker.cmd.arg1,
+			psx_tracker.cmd.arg2,
+			psx_tracker.cmd.arg3,
+			psx_tracker.cmd.arg4,
+			psx_tracker.cmd.arg5,
+			psx_tracker.cmd.arg6);
+	    } else {
+		fprintf(stderr, "trap:%ld a123=[%ld,%ld,%ld]\n",
+			psx_tracker.cmd.syscall_nr,
+			psx_tracker.cmd.arg1,
+			psx_tracker.cmd.arg2,
+			psx_tracker.cmd.arg3);
+	    }
+	    fprintf(stderr, "results:");
+	    for (ref = psx_tracker.root; ref; ref = next) {
+		next = ref->next;
+		if (ref->thread == self) {
+		    continue;
+		}
+		if (ret != ref->retval) {
+		    fprintf(stderr, " %d={%ld}", ref->tid, ref->retval);
+		}
+	    }
+	    fprintf(stderr, " wanted={%ld}\n", ret);
+	    if (psx_tracker.sensitivity == PSX_WARNING) {
+		break;
+	    }
+	    pthread_kill(self, SIGSYS);
+	}
+	psx_unlock();
+    }
+    errno = restore_errno;
     psx_new_state(_PSX_SYSCALL, _PSX_IDLE);
 
 defer:
     return ret;
+}
+
+/*
+ * _psx_cleanup its called when the program exits. It is used to free
+ * any memory used by the thread tracker.
+ */
+static void _psx_cleanup(void) {
+    registered_thread_t *ref, *next;
+
+    /*
+     * We enter the exiting state. Unlike exiting a single thread we
+     * never leave this state since this cleanup is only done at
+     * program exit.
+     */
+    psx_lock();
+    while (psx_tracker.state != _PSX_IDLE && psx_tracker.state != _PSX_INFORK) {
+	pthread_cond_wait(&psx_tracker.cond, &psx_tracker.state_mu);
+    }
+    psx_tracker.state = _PSX_EXITING;
+    psx_unlock();
+
+    for (ref = psx_tracker.root; ref; ref = next) {
+	next = ref->next;
+	psx_do_unregister(ref);
+    }
+}
+
+/*
+ * Change the PSX sensitivity level. If the threads appear to have
+ * diverged in behavior, this can cause the library to notify the
+ * user.
+ */
+int psx_set_sensitivity(psx_sensitivity_t level) {
+    if (level < PSX_IGNORE || level > PSX_ERROR) {
+	errno = EINVAL;
+	return -1;
+    }
+    psx_lock();
+    psx_tracker.sensitivity = level;
+    psx_unlock();
+    return 0;
 }
