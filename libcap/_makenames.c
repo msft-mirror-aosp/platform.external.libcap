@@ -26,7 +26,7 @@ struct {
  * indicated extended empty space.
  */
 static void *recalloc(void *p, int was, int is) {
-    void *n = realloc(p, is);
+    char *n = realloc(p, is);
     if (!n) {
 	fputs("out of memory", stderr);
 	exit(1);
@@ -45,10 +45,14 @@ int main(void)
 	if (maxcaps <= list[i].index) {
 	    maxcaps = list[i].index + 1;
 	}
-        if (list[i].index >= pointers_avail) {
+        if (pointers == NULL || list[i].index >= pointers_avail) {
 	    int was = pointers_avail * sizeof(char *);
 	    pointers_avail = 2 * list[i].index + 1;
 	    pointers = recalloc(pointers, was, pointers_avail * sizeof(char *));
+	    if (pointers == NULL) {
+		perror("unable to continue");
+		exit(1);
+	    }
         }
 	pointers[list[i].index] = list[i].name;
 	int n = strlen(list[i].name);
