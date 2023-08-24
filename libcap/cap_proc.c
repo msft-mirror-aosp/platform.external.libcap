@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997-8,2007,11,19,20 Andrew G Morgan <morgan@kernel.org>
+ * Copyright (c) 1997-8,2007,11,19-21 Andrew G Morgan <morgan@kernel.org>
  *
  * This file deals with getting and setting capabilities on processes.
  */
@@ -17,8 +17,6 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-
-#include <linux/limits.h>
 
 #include "libcap.h"
 
@@ -137,7 +135,13 @@ static int _libcap_wprctl3(struct syscaller_s *sc,
 			   long int pr_cmd, long int arg1, long int arg2)
 {
     if (_libcap_overrode_syscalls) {
-	return sc->three(SYS_prctl, pr_cmd, arg1, arg2);
+	int result;
+	result = sc->three(SYS_prctl, pr_cmd, arg1, arg2);
+	if (result >= 0) {
+	    return result;
+	}
+	errno = -result;
+	return -1;
     }
     return prctl(pr_cmd, arg1, arg2, 0, 0, 0);
 }
@@ -147,7 +151,13 @@ static int _libcap_wprctl6(struct syscaller_s *sc,
 			   long int arg3, long int arg4, long int arg5)
 {
     if (_libcap_overrode_syscalls) {
-	return sc->six(SYS_prctl, pr_cmd, arg1, arg2, arg3, arg4, arg5);
+	int result;
+	result = sc->six(SYS_prctl, pr_cmd, arg1, arg2, arg3, arg4, arg5);
+	if (result >= 0) {
+	    return result;
+	}
+	errno = -result;
+	return -1;
     }
     return prctl(pr_cmd, arg1, arg2, arg3, arg4, arg5);
 }
@@ -183,7 +193,9 @@ static int _cap_set_proc(struct syscaller_s *sc, cap_t cap_d) {
     }
 
     _cap_debug("setting process capabilities");
+    _cap_mu_lock(&cap_d->mutex);
     retval = _libcap_capset(sc, &cap_d->head, &cap_d->u[0].set);
+    _cap_mu_unlock(&cap_d->mutex);
 
     return retval;
 }
@@ -208,9 +220,11 @@ int capgetp(pid_t pid, cap_t cap_d)
 
     _cap_debug("getting process capabilities for proc %d", pid);
 
+    _cap_mu_lock(&cap_d->mutex);
     cap_d->head.pid = pid;
     error = capget(&cap_d->head, &cap_d->u[0].set);
     cap_d->head.pid = 0;
+    _cap_mu_unlock(&cap_d->mutex);
 
     return error;
 }
@@ -252,10 +266,12 @@ int capsetp(pid_t pid, cap_t cap_d)
     }
 
     _cap_debug("setting process capabilities for proc %d", pid);
+    _cap_mu_lock(&cap_d->mutex);
     cap_d->head.pid = pid;
     error = capset(&cap_d->head, &cap_d->u[0].set);
     cap_d->head.version = _LIBCAP_CAPABILITY_VERSION;
     cap_d->head.pid = 0;
+    _cap_mu_unlock(&cap_d->mutex);
 
     return error;
 }
@@ -267,26 +283,12 @@ int capsetp(pid_t pid, cap_t cap_d)
 
 int cap_get_bound(cap_value_t cap)
 {
-    int result;
-
-    result = prctl(PR_CAPBSET_READ, pr_arg(cap), pr_arg(0));
-    if (result < 0) {
-	errno = -result;
-	return -1;
-    }
-    return result;
+    return prctl(PR_CAPBSET_READ, pr_arg(cap), pr_arg(0));
 }
 
 static int _cap_drop_bound(struct syscaller_s *sc, cap_value_t cap)
 {
-    int result;
-
-    result = _libcap_wprctl3(sc, PR_CAPBSET_DROP, pr_arg(cap), pr_arg(0));
-    if (result < 0) {
-	errno = -result;
-	return -1;
-    }
-    return result;
+    return _libcap_wprctl3(sc, PR_CAPBSET_DROP, pr_arg(cap), pr_arg(0));
 }
 
 /* drop a capability from the bounding set */
@@ -312,7 +314,7 @@ int cap_get_ambient(cap_value_t cap)
 static int _cap_set_ambient(struct syscaller_s *sc,
 			    cap_value_t cap, cap_flag_value_t set)
 {
-    int result, val;
+    int val;
     switch (set) {
     case CAP_SET:
 	val = PR_CAP_AMBIENT_RAISE;
@@ -324,13 +326,8 @@ static int _cap_set_ambient(struct syscaller_s *sc,
 	errno = EINVAL;
 	return -1;
     }
-    result = _libcap_wprctl6(sc, PR_CAP_AMBIENT, pr_arg(val), pr_arg(cap),
-			     pr_arg(0), pr_arg(0), pr_arg(0));
-    if (result < 0) {
-	errno = -result;
-	return -1;
-    }
-    return result;
+    return _libcap_wprctl6(sc, PR_CAP_AMBIENT, pr_arg(val), pr_arg(cap),
+			   pr_arg(0), pr_arg(0), pr_arg(0));
 }
 
 /*
@@ -355,14 +352,9 @@ static int _cap_reset_ambient(struct syscaller_s *sc)
 	}
     }
 
-    result = _libcap_wprctl6(sc, PR_CAP_AMBIENT,
-			     pr_arg(PR_CAP_AMBIENT_CLEAR_ALL),
-			     pr_arg(0), pr_arg(0), pr_arg(0), pr_arg(0));
-    if (result < 0) {
-	errno = -result;
-	return -1;
-    }
-    return result;
+    return _libcap_wprctl6(sc, PR_CAP_AMBIENT,
+			   pr_arg(PR_CAP_AMBIENT_CLEAR_ALL),
+			   pr_arg(0), pr_arg(0), pr_arg(0), pr_arg(0));
 }
 
 /*
@@ -371,7 +363,7 @@ static int _cap_reset_ambient(struct syscaller_s *sc)
  * case where the set is empty already but the ambient cap API is
  * locked.
  */
-int cap_reset_ambient()
+int cap_reset_ambient(void)
 {
     return _cap_reset_ambient(&multithread);
 }
@@ -443,13 +435,17 @@ static cap_value_t raise_cap_setpcap[] = {CAP_SETPCAP};
 
 static int _cap_set_mode(struct syscaller_s *sc, cap_mode_t flavor)
 {
-    cap_t working = cap_get_proc();
+    int ret;
     unsigned secbits = CAP_SECURED_BITS_AMBIENT;
+    cap_t working = cap_get_proc();
 
-    int ret = cap_set_flag(working, CAP_EFFECTIVE,
-			   1, raise_cap_setpcap, CAP_SET);
-    ret = ret | _cap_set_proc(sc, working);
+    if (working == NULL) {
+	_cap_debug("getting current process' capabilities failed");
+	return -1;
+    }
 
+    ret = cap_set_flag(working, CAP_EFFECTIVE, 1, raise_cap_setpcap, CAP_SET) |
+	_cap_set_proc(sc, working);
     if (ret == 0) {
 	cap_flag_t c;
 
@@ -483,7 +479,9 @@ static int _cap_set_mode(struct syscaller_s *sc, cap_mode_t flavor)
 	    /* for good measure */
 	    _cap_set_no_new_privs(sc);
 	    break;
-
+	case CAP_MODE_HYBRID:
+	    ret = _cap_set_secbits(sc, 0);
+	    break;
 	default:
 	    errno = EINVAL;
 	    ret = -1;
@@ -519,13 +517,16 @@ cap_mode_t cap_get_mode(void)
 {
     unsigned secbits = cap_get_secbits();
 
+    if (secbits == 0) {
+	return CAP_MODE_HYBRID;
+    }
     if ((secbits & CAP_SECURED_BITS_BASIC) != CAP_SECURED_BITS_BASIC) {
 	return CAP_MODE_UNCERTAIN;
     }
 
     /* validate ambient is not set */
     int olderrno = errno;
-    int ret = 0;
+    int ret = 0, cf;
     cap_value_t c;
     for (c = 0; !ret; c++) {
 	ret = cap_get_ambient(c);
@@ -534,6 +535,7 @@ cap_mode_t cap_get_mode(void)
 	    if (c && secbits != CAP_SECURED_BITS_AMBIENT) {
 		return CAP_MODE_UNCERTAIN;
 	    }
+	    ret = 0;
 	    break;
 	}
 	if (ret) {
@@ -541,11 +543,22 @@ cap_mode_t cap_get_mode(void)
 	}
     }
 
+    /*
+     * Explore how capabilities differ from empty.
+     */
     cap_t working = cap_get_proc();
     cap_t empty = cap_init();
-    int cf = cap_compare(empty, working);
+    if (working == NULL || empty == NULL) {
+	_cap_debug("working=%p, empty=%p - need both non-NULL", working, empty);
+	ret = -1;
+    } else {
+	cf = cap_compare(empty, working);
+    }
     cap_free(empty);
     cap_free(working);
+    if (ret != 0) {
+	return CAP_MODE_UNCERTAIN;
+    }
 
     if (CAP_DIFFERS(cf, CAP_INHERITABLE)) {
 	return CAP_MODE_PURE1E;
@@ -571,6 +584,10 @@ static int _cap_setuid(struct syscaller_s *sc, uid_t uid)
 {
     const cap_value_t raise_cap_setuid[] = {CAP_SETUID};
     cap_t working = cap_get_proc();
+    if (working == NULL) {
+	return -1;
+    }
+
     (void) cap_set_flag(working, CAP_EFFECTIVE,
 			1, raise_cap_setuid, CAP_SET);
     /*
@@ -626,6 +643,10 @@ static int _cap_setgroups(struct syscaller_s *sc,
 {
     const cap_value_t raise_cap_setgid[] = {CAP_SETGID};
     cap_t working = cap_get_proc();
+    if (working == NULL) {
+	return -1;
+    }
+
     (void) cap_set_flag(working, CAP_EFFECTIVE,
 			1, raise_cap_setgid, CAP_SET);
     /*
@@ -684,9 +705,25 @@ int cap_setgroups(gid_t gid, size_t ngroups, const gid_t groups[])
  */
 cap_iab_t cap_iab_get_proc(void)
 {
-    cap_iab_t iab = cap_iab_init();
-    cap_t current = cap_get_proc();
+    cap_iab_t iab;
+    cap_t current;
+
+    iab = cap_iab_init();
+    if (iab == NULL) {
+	_cap_debug("no memory for IAB tuple");
+	return NULL;
+    }
+
+    current = cap_get_proc();
+    if (current == NULL) {
+	_cap_debug("no memory for cap_t");
+	cap_free(iab);
+	return NULL;
+    }
+
     cap_iab_fill(iab, CAP_IAB_INH, current, CAP_INHERITABLE);
+    cap_free(current);
+
     cap_value_t c;
     for (c = cap_max_bits(); c; ) {
 	--c;
@@ -704,13 +741,17 @@ cap_iab_t cap_iab_get_proc(void)
 
 /*
  * _cap_iab_set_proc sets the iab collection using the requested syscaller.
+ * The iab value is locked by the caller.
  */
 static int _cap_iab_set_proc(struct syscaller_s *sc, cap_iab_t iab)
 {
-    int ret, i;
-    cap_t working, temp = cap_get_proc();
+    int ret, i, raising = 0;
     cap_value_t c;
-    int raising = 0;
+    cap_t working, temp = cap_get_proc();
+
+    if (temp == NULL) {
+	return -1;
+    }
 
     for (i = 0; i < _LIBCAP_CAPABILITY_U32S; i++) {
 	__u32 newI = iab->i[i];
@@ -722,6 +763,10 @@ static int _cap_iab_set_proc(struct syscaller_s *sc, cap_iab_t iab)
     }
 
     working = cap_dup(temp);
+    if (working == NULL) {
+	ret = -1;
+	goto defer;
+    }
     if (raising) {
 	ret = cap_set_flag(working, CAP_EFFECTIVE,
 			   1, raise_cap_setpcap, CAP_SET);
@@ -770,7 +815,15 @@ defer:
  */
 int cap_iab_set_proc(cap_iab_t iab)
 {
-    return _cap_iab_set_proc(&multithread, iab);
+    int retval;
+    if (!good_cap_iab_t(iab)) {
+	errno = EINVAL;
+	return -1;
+    }
+    _cap_mu_lock(&iab->mutex);
+    retval = _cap_iab_set_proc(&multithread, iab);
+    _cap_mu_unlock(&iab->mutex);
+    return retval;
 }
 
 /*
@@ -785,51 +838,94 @@ int cap_iab_set_proc(cap_iab_t iab)
  * considered to have failed and the launch will be aborted - further,
  * errno will be communicated to the parent.
  */
-void cap_launcher_callback(cap_launch_t attr, int (callback_fn)(void *detail))
+int cap_launcher_callback(cap_launch_t attr, int (callback_fn)(void *detail))
 {
+    if (!good_cap_launch_t(attr)) {
+	errno = EINVAL;
+	return -1;
+    }
+    _cap_mu_lock(&attr->mutex);
     attr->custom_setup_fn = callback_fn;
+    _cap_mu_unlock(&attr->mutex);
+    return 0;
 }
 
 /*
  * cap_launcher_setuid primes the launcher to attempt a change of uid.
  */
-void cap_launcher_setuid(cap_launch_t attr, uid_t uid)
+int cap_launcher_setuid(cap_launch_t attr, uid_t uid)
 {
+    if (!good_cap_launch_t(attr)) {
+	errno = EINVAL;
+	return -1;
+    }
+    _cap_mu_lock(&attr->mutex);
     attr->uid = uid;
     attr->change_uids = 1;
+    _cap_mu_unlock(&attr->mutex);
+    return 0;
 }
 
 /*
  * cap_launcher_setgroups primes the launcher to attempt a change of
  * gid and groups.
  */
-void cap_launcher_setgroups(cap_launch_t attr, gid_t gid,
-			    int ngroups, const gid_t *groups)
+int cap_launcher_setgroups(cap_launch_t attr, gid_t gid,
+			   int ngroups, const gid_t *groups)
 {
+    if (!good_cap_launch_t(attr)) {
+	errno = EINVAL;
+	return -1;
+    }
+    _cap_mu_lock(&attr->mutex);
     attr->gid = gid;
     attr->ngroups = ngroups;
     attr->groups = groups;
     attr->change_gids = 1;
+    _cap_mu_unlock(&attr->mutex);
+    return 0;
 }
 
 /*
  * cap_launcher_set_mode primes the launcher to attempt a change of
  * mode.
  */
-void cap_launcher_set_mode(cap_launch_t attr, cap_mode_t flavor)
+int cap_launcher_set_mode(cap_launch_t attr, cap_mode_t flavor)
 {
+    if (!good_cap_launch_t(attr)) {
+	errno = EINVAL;
+	return -1;
+    }
+    _cap_mu_lock(&attr->mutex);
     attr->mode = flavor;
     attr->change_mode = 1;
+    _cap_mu_unlock(&attr->mutex);
+    return 0;
 }
 
 /*
- * cap_launcher_set_iab primes the launcher to attempt to change the iab bits of
- * the launched child.
+ * cap_launcher_set_iab primes the launcher to attempt to change the
+ * IAB values of the launched child. The launcher locks iab while it
+ * is owned by the launcher: this prevents the user from
+ * asynchronously changing its value while it is associated with the
+ * launcher.
  */
 cap_iab_t cap_launcher_set_iab(cap_launch_t attr, cap_iab_t iab)
 {
+    if (!good_cap_launch_t(attr)) {
+	errno = EINVAL;
+	return NULL;
+    }
+    _cap_mu_lock(&attr->mutex);
     cap_iab_t old = attr->iab;
     attr->iab = iab;
+    if (old != NULL) {
+	_cap_mu_unlock(&old->mutex);
+    }
+    if (iab != NULL) {
+	_cap_mu_lock(&iab->mutex);
+    }
+    _cap_mu_unlock(&attr->mutex);
     return old;
 }
 
@@ -837,15 +933,26 @@ cap_iab_t cap_launcher_set_iab(cap_launch_t attr, cap_iab_t iab)
  * cap_launcher_set_chroot sets the intended chroot for the launched
  * child.
  */
-void cap_launcher_set_chroot(cap_launch_t attr, const char *chroot)
+int cap_launcher_set_chroot(cap_launch_t attr, const char *chroot)
 {
+    if (!good_cap_launch_t(attr)) {
+	errno = EINVAL;
+	return -1;
+    }
+    _cap_mu_lock(&attr->mutex);
     attr->chroot = _libcap_strdup(chroot);
+    _cap_mu_unlock(&attr->mutex);
+    return 0;
 }
 
 static int _cap_chroot(struct syscaller_s *sc, const char *root)
 {
     const cap_value_t raise_cap_sys_chroot[] = {CAP_SYS_CHROOT};
     cap_t working = cap_get_proc();
+    if (working == NULL) {
+	return -1;
+    }
+
     (void) cap_set_flag(working, CAP_EFFECTIVE,
 			1, raise_cap_sys_chroot, CAP_SET);
     int ret = _cap_set_proc(sc, working);
@@ -858,6 +965,9 @@ static int _cap_chroot(struct syscaller_s *sc, const char *root)
 	    }
 	} else {
 	    ret = chroot(root);
+	}
+	if (ret == 0) {
+	    ret = chdir("/");
 	}
     }
     int olderrno = errno;
@@ -952,15 +1062,21 @@ pid_t cap_launch(cap_launch_t attr, void *detail) {
     int ps[2];
     pid_t child;
 
+    if (!good_cap_launch_t(attr)) {
+	errno = EINVAL;
+	return -1;
+    }
+    _cap_mu_lock(&attr->mutex);
+
     /* The launch must have a purpose */
     if (attr->custom_setup_fn == NULL &&
 	(attr->arg0 == NULL || attr->argv == NULL)) {
 	errno = EINVAL;
-	return -1;
+	_cap_mu_unlock_return(&attr->mutex, -1);
     }
 
     if (pipe2(ps, O_CLOEXEC) != 0) {
-	return -1;
+	_cap_mu_unlock_return(&attr->mutex, -1);
     }
 
     child = fork();
@@ -970,9 +1086,11 @@ pid_t cap_launch(cap_launch_t attr, void *detail) {
 	close(ps[0]);
 	prctl(PR_SET_NAME, "cap-launcher", 0, 0, 0);
 	_cap_launch(ps[1], attr, detail);
-	/* no return from this function */
-	_exit(1);
+	/* no return from above function */
     }
+
+    /* child has its own copy, and parent no longer needs it locked. */
+    _cap_mu_unlock(&attr->mutex);
     close(ps[1]);
     if (child < 0) {
 	goto defer;
