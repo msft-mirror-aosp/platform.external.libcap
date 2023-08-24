@@ -26,7 +26,7 @@ SO_MAIN(int argc, char **argv)
     printf(
 	"%s (version " LIBCAP_VERSION ") is a PAM module to specify\n"
 	"inheritable (IAB) capabilities via the libpam authentication\n"
-	"abstraction. See the libcap License file for licensing information.\n"
+	"abstraction. See the pam_cap License file for licensing information.\n"
 	"\n"
 	"Release notes and feature documentation for libcap and pam_cap.so\n"
 	"can be found at:\n"
@@ -36,7 +36,7 @@ SO_MAIN(int argc, char **argv)
 	return;
     }
 
-    if (argc > 2 || strcmp(argv[1], "--help")) {
+    if (argc > 2 || argv[1] == NULL || strcmp(argv[1], "--help")) {
 	printf("\n%s only supports the optional argument --help\n", cmd);
 	exit(1);
     }
@@ -48,6 +48,7 @@ SO_MAIN(int argc, char **argv)
 	   "config=<file> - override the default config with file\n"
 	   "keepcaps      - workaround for apps that setuid without this\n"
 	   "autoauth      - pam_cap.so to always succeed for the 'auth' phase\n"
-	   "default=<iab> - fallback IAB value if there is no '*' rule\n",
+	   "default=<iab> - fallback IAB value if there is no '*' rule\n"
+	   "defer         - apply IAB value at pam_exit (not via setcred)\n",
 	cmd);
 }

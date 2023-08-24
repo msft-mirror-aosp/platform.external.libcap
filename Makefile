@@ -8,7 +8,7 @@ include Make.Rules
 # flags
 #
 
-all install clean: %: %-here
+all test sudotest install clean: %: %-here
 	$(MAKE) -C libcap $@
 ifneq ($(PAM_CAP),no)
 	$(MAKE) -C pam_cap $@
@@ -20,9 +20,12 @@ endif
 	$(MAKE) -C tests $@
 	$(MAKE) -C progs $@
 	$(MAKE) -C doc $@
-	$(MAKE) -C kdebug $@
 
 all-here:
+
+test-here:
+
+sudotest-here:
 
 install-here:
 
@@ -32,8 +35,11 @@ clean-here:
 distclean: clean
 	$(DISTCLEAN)
 	@echo "CONFIRM Go package cap has right version dependency on cap/psx:"
-	for x in $$(find . -name go.mod); do grep -F -v "module" $$x | fgrep "kernel.org/pub/linux/libs/security/libcap" > /dev/null || continue ; grep -F "v$(GOMAJOR).$(VERSION).$(MINOR)" $$x  > /dev/null && continue ; echo "$$x is not updated. Try running: ./gomods.sh v$(GOMAJOR).$(VERSION).$(MINOR)" ; exit 1 ; done
+	for x in $$(find . -name go.mod); do $(BUILD_FGREP) -v "module" $$x | $(BUILD_FGREP) "kernel.org/pub/linux/libs/security/libcap" > /dev/null || continue ; $(BUILD_FGREP) "v$(GOMAJOR).$(VERSION).$(MINOR)" $$x  > /dev/null && continue ; echo "$$x is not updated. Try running: ./gomods.sh v$(GOMAJOR).$(VERSION).$(MINOR)" ; exit 1 ; done
 	@echo "ALL go.mod files updated"
+	@echo "Confirm headers export current version"
+	$(BUILD_FGREP) "#define LIBCAP_MAJOR $(VERSION)" libcap/include/sys/capability.h
+	$(BUILD_FGREP) "#define LIBCAP_MINOR $(MINOR)" libcap/include/sys/capability.h
 	@echo "Now validate that everything is checked in to a clean tree.."
 	test -z "$$(git status --ignored -s)"
 	@echo "All good!"
@@ -41,35 +47,15 @@ distclean: clean
 release: distclean
 	cd .. && ln -s libcap libcap-$(VERSION).$(MINOR) && tar cvf libcap-$(VERSION).$(MINOR).tar --exclude patches libcap-$(VERSION).$(MINOR)/* && rm libcap-$(VERSION).$(MINOR)
 
-test: all
-	$(MAKE) -C libcap $@
-	$(MAKE) -C tests $@
-ifneq ($(PAM_CAP),no)
-	$(MAKE) -C pam_cap $@
-endif
-ifeq ($(GOLANG),yes)
-	$(MAKE) -C go $@
-endif
-	$(MAKE) -C progs $@
-
 ktest: all
 	$(MAKE) -C kdebug test
 
-sudotest: all
-	$(MAKE) -C tests $@
-ifneq ($(PAM_CAP),no)
-	$(MAKE) -C pam_cap $@
-endif
-ifeq ($(GOLANG),yes)
-	$(MAKE) -C go $@
-endif
-	$(MAKE) -C progs $@
-
-distcheck:
+distcheck: distclean
 	./distcheck.sh
+	$(MAKE) DYNAMIC=no COPTS="-D_FORTIFY_SOURCE=2 -O1 -g" clean test
 	$(MAKE) DYNAMIC=yes clean all test sudotest
 	$(MAKE) DYNAMIC=no COPTS="-O2 -std=c89" clean all test sudotest
-	$(MAKE) PAM_CAP=no CC=/usr/local/musl/bin/musl-gcc clean all test sudotest
+	$(MAKE) PAM_CAP=no CC=musl-gcc clean all test sudotest
 	$(MAKE) CC=clang clean all test sudotest
 	$(MAKE) clean all test sudotest
 	$(MAKE) distclean
