@@ -71,23 +71,42 @@ static void __execable_parse_args(int *argc_p, char ***argv_p)
 }
 
 /*
+ * Linux x86 ABI requires the stack be 16 byte aligned. Keep things
+ * simple and just force it.
+ */
+#if defined(__i386__) || defined(__x86_64__)
+#define __SO_FORCE_ARG_ALIGNMENT  __attribute__((force_align_arg_pointer))
+#else
+#define __SO_FORCE_ARG_ALIGNMENT
+#endif /* def some x86 */
+
+/*
+ * Permit the compiler to override this one.
+ */
+#ifndef EXECABLE_INITIALIZE
+#define EXECABLE_INITIALIZE do { } while(0)
+#endif /* ndef EXECABLE_INITIALIZE */
+
+/*
  * Note, to avoid any runtime confusion, SO_MAIN is a void static
  * function.
  */
-
-#define SO_MAIN						        \
-static void __execable_main(int, char**);                       \
-extern void __so_start(void);		                	\
-void __so_start(void)                                           \
-{                                                               \
-    int argc;                                                   \
-    char **argv;                                                \
-    __execable_parse_args(&argc, &argv);                        \
+#define SO_MAIN							\
+static void __execable_main(int, char**);			\
+__attribute__((visibility ("hidden")))                          \
+void __so_start(void);					        \
+__SO_FORCE_ARG_ALIGNMENT					\
+void __so_start(void)						\
+{								\
+    int argc;							\
+    char **argv;						\
+    __execable_parse_args(&argc, &argv);			\
+    EXECABLE_INITIALIZE;                                        \
     __execable_main(argc, argv);				\
-    if (argc != 0) {                                            \
-	free(argv[0]);                                          \
-	free(argv);                                             \
-    }                                                           \
-    exit(0);                                                    \
-}                                                               \
+    if (argc != 0) {						\
+	free(argv[0]);						\
+	free(argv);						\
+    }								\
+    exit(0);							\
+}								\
 static void __execable_main
