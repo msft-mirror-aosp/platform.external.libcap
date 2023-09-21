@@ -12,6 +12,7 @@
 #endif
 
 #include <errno.h>
+#include <fcntl.h>
 #include <grp.h>
 #include <limits.h>
 #include <pwd.h>
@@ -22,6 +23,7 @@
 #include <syslog.h>
 #include <sys/capability.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <linux/limits.h>
 
@@ -39,9 +41,11 @@ struct pam_cap_s {
     int debug;
     int keepcaps;
     int autoauth;
+    int defer;
     const char *user;
     const char *conf_filename;
     const char *fallback;
+    pam_handle_t *pamh;
 };
 
 /*
@@ -67,6 +71,9 @@ static int load_groups(const char *user, char ***groups, int *groups_n) {
     }
 
     *groups = calloc(ngrps, sizeof(char *));
+    if (*groups == NULL) {
+	return -1;
+    }
     int g_n = 0, i;
     for (i = 0; i < ngrps; i++) {
 	const struct group *g = getgrgid(grps[i]);
@@ -100,6 +107,27 @@ static char *read_capabilities_for_user(const char *user, const char *source)
     if (cap_file == NULL) {
 	D(("failed to open capability file"));
 	goto defer;
+    }
+    /*
+     * In all cases other than "/dev/null", the config file should not
+     * be world writable. We do not check for ownership limitations or
+     * group write restrictions as these represent legitimate local
+     * administration choices. Especially in a system operating in
+     * CAP_MODE_PURE1E.
+     */
+    if (strcmp(source, "/dev/null") != 0) {
+	struct stat sb;
+	D(("validate filehandle [for opened %s] does not point to a world"
+	   " writable file", source));
+	if (fstat(fileno(cap_file), &sb) != 0) {
+	    D(("unable to fstat config file: %d", errno));
+	    goto close_out_file;
+	}
+	if ((sb.st_mode & S_IWOTH) != 0) {
+	    D(("open failed [%s] is world writable test: security hole",
+	       source));
+	    goto close_out_file;
+	}
     }
 
     int found_one = 0;
@@ -162,6 +190,7 @@ static char *read_capabilities_for_user(const char *user, const char *source)
 	line = NULL;
     }
 
+close_out_file:
     fclose(cap_file);
 
 defer:
@@ -179,6 +208,51 @@ defer:
     }
 
     return cap_string;
+}
+
+/*
+ * This is the "defer" cleanup function that actually applies the IAB
+ * tuple. This happens really late in the PAM session, hopefully after
+ * the application has performed its setuid() function.
+ */
+static void iab_apply(pam_handle_t *pamh, void *data, int error_status)
+{
+    cap_iab_t iab = data;
+    int retval = error_status & ~(PAM_DATA_REPLACE|PAM_DATA_SILENT);
+
+#ifdef PAM_DEBUG
+    {
+	cap_t c = cap_get_proc();
+	cap_iab_t tu = cap_iab_get_proc();
+	char *tc, *ttu;
+	tc = cap_to_text(c, NULL);
+	ttu = cap_iab_to_text(tu);
+
+	D(("iab_apply with uid=%d,euid=%d and error_status=0x%08x \"%s\", [%s]",
+	   getuid(), geteuid(), error_status, tc, ttu));
+
+	cap_free(ttu);
+	cap_free(tc);
+	cap_free(tu);
+	cap_free(c);
+    }
+#endif
+
+    data = NULL;
+    if (error_status & PAM_DATA_REPLACE) {
+	goto done;
+    }
+
+    if (retval != PAM_SUCCESS || !(error_status & PAM_DATA_SILENT)) {
+	goto done;
+    }
+
+    if (cap_iab_set_proc(iab) != 0) {
+	D(("IAB setting failed"));
+    }
+
+done:
+    cap_free(iab);
 }
 
 /*
@@ -238,7 +312,16 @@ static int set_capabilities(struct pam_cap_s *cs)
 	goto cleanup_conf;
     }
 
-    if (!cap_iab_set_proc(iab)) {
+    if (cs->defer) {
+	D(("configured to delay applying IAB"));
+	int ret = pam_set_data(cs->pamh, "pam_cap_iab", iab, iab_apply);
+	if (ret != PAM_SUCCESS) {
+	    D(("unable to cache capabilities for delayed setting: %d", ret));
+	    /* since ok=0, the module will return PAM_IGNORE */
+	    cap_free(iab);
+	}
+	iab = NULL;
+    } else if (!cap_iab_set_proc(iab)) {
 	D(("able to set the IAB [%s] value", conf_caps));
 	ok = 1;
     }
@@ -249,6 +332,10 @@ static int set_capabilities(struct pam_cap_s *cs)
 	 * Best effort to set keep caps - this may help work around
 	 * situations where applications are using a capabilities
 	 * unaware setuid() call.
+	 *
+	 * It isn't needed unless you want to support Ambient vector
+	 * values in the IAB. In this case, it will likely also
+	 * require you use the "defer" module argument.
 	 */
 	D(("setting keepcaps"));
 	(void) cap_prctlw(PR_SET_KEEPCAPS, 1, 0, 0, 0, 0);
@@ -296,6 +383,8 @@ static void parse_args(int argc, const char **argv, struct pam_cap_s *pcs)
 	    pcs->autoauth = 1;
 	} else if (!strncmp(*argv, "default=", 8)) {
 	    pcs->fallback = 8 + *argv;
+	} else if (!strcmp(*argv, "defer")) {
+	    pcs->defer = 1;
 	} else {
 	    _pam_log(LOG_ERR, "unknown option; %s", *argv);
 	}
@@ -330,7 +419,7 @@ int pam_sm_authenticate(pam_handle_t *pamh, int flags,
     }
 
     if (retval != PAM_SUCCESS) {
-	D(("pam_get_user failed: %s", pam_strerror(pamh, retval)));
+	D(("pam_get_user failed: pam error=%d", retval));
 	memset(&pcs, 0, sizeof(pcs));
 	return PAM_AUTH_ERR;
     }
@@ -355,23 +444,22 @@ int pam_sm_authenticate(pam_handle_t *pamh, int flags,
 	_pam_drop(conf_caps);
 
 	return PAM_SUCCESS;
-
-    } else {
-
-	D(("there are no capabilities restrictions on this user"));
-	return PAM_IGNORE;
-
     }
+
+    D(("there are no capabilities restrictions on this user"));
+    return PAM_IGNORE;
 }
 
 /*
- * pam_sm_setcred applies inheritable capabilities loaded by the
- * pam_sm_authenticate pass for the user.
+ * pam_sm_setcred optionally applies inheritable capabilities loaded
+ * by the pam_sm_authenticate pass for the user. If it doesn't apply
+ * them directly (because of the "defer" module argument), it caches
+ * the cap_iab_t value for later use during the pam_end() call.
  */
 int pam_sm_setcred(pam_handle_t *pamh, int flags,
 		   int argc, const char **argv)
 {
-    int retval;
+    int retval = 0;
     struct pam_cap_s pcs;
 
     if (!(flags & (PAM_ESTABLISH_CRED | PAM_REINITIALIZE_CRED))) {
@@ -387,6 +475,7 @@ int pam_sm_setcred(pam_handle_t *pamh, int flags,
 	return PAM_AUTH_ERR;
     }
 
+    pcs.pamh = pamh;
     retval = set_capabilities(&pcs);
     memset(&pcs, 0, sizeof(pcs));
 
