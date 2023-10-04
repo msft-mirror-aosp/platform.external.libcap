@@ -49,7 +49,7 @@ static int do_getcap(const char *fname, const struct stat *stbuf,
 
     cap_d = cap_get_file(fname);
     if (cap_d == NULL) {
-	if (errno != ENODATA) {
+	if (errno != ENODATA && errno != ENOTSUP) {
 	    fprintf(stderr, "Failed to get capabilities of file '%s' (%s)\n",
 		    fname, strerror(errno));
 	} else if (verbose) {
@@ -110,11 +110,11 @@ int main(int argc, char **argv)
 
     for (i=optind; argv[i] != NULL; i++) {
 	struct stat stbuf;
-
-	if (lstat(argv[i], &stbuf) != 0) {
-	    fprintf(stderr, "%s (%s)\n", argv[i], strerror(errno));
+	char *arg = argv[i];
+	if (lstat(arg, &stbuf) != 0) {
+	    fprintf(stderr, "%s (%s)\n", arg, strerror(errno));
 	} else if (recursive) {
-	    nftw(argv[i], do_getcap, 20, FTW_PHYS);
+	    nftw(arg, do_getcap, 20, FTW_PHYS);
 	} else {
 	    int tflag = S_ISREG(stbuf.st_mode) ? FTW_F :
 		(S_ISLNK(stbuf.st_mode) ? FTW_SL : FTW_NS);
