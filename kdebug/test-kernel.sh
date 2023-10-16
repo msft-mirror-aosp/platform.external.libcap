@@ -13,8 +13,9 @@ function die {
 }
 
 pushd ..
-make test || die "failed to make test of libcap tree"
-make -C progs tcapsh-static || die "failed to make progs/tcapsh-static"
+make LIBCSTATIC=yes all test || die "failed to make all test of libcap tree"
+make LIBCSTATIC=yes -C progs tcapsh-static || die "failed to make progs/tcapsh-static"
+make -C tests uns_test
 popd
 
 # Assumes desired make *config (eg. make defconfig) is already done.
@@ -61,7 +62,7 @@ if [ -f "$HERE/interactive" ]; then
     echo "file /root/interactive $HERE/interactive 0755 0 0" >> fs.conf
 fi
 
-COMMANDS="awk cat chmod cp dmesg fgrep id less ln ls mkdir mount pwd rm rmdir sh sort umount uniq vi"
+COMMANDS="awk cat chmod cp dmesg grep id less ln ls mkdir mount pwd rm rmdir sh sort umount uniq vi"
 for f in $COMMANDS; do
     echo slink /bin/$f /sbin/busybox 0755 0 0 >> fs.conf
 done

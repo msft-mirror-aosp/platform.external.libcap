@@ -2,7 +2,7 @@
  * <sys/capability.h>
  *
  * Copyright (C) 1997   Aleph One
- * Copyright (C) 1997,8, 2008,19,20 Andrew G. Morgan <morgan@kernel.org>
+ * Copyright (C) 1997,8, 2008,19-22 Andrew G. Morgan <morgan@kernel.org>
  *
  * defunct POSIX.1e Standard: 25.2 Capabilities           <sys/capability.h>
  */
@@ -15,13 +15,18 @@ extern "C" {
 #endif
 
 /*
+ * Provide a programmatic way to #ifdef around features.
+ */
+#define LIBCAP_MAJOR 2
+#define LIBCAP_MINOR 69
+
+/*
  * This file complements the kernel file by providing prototype
  * information for the user library.
  */
 
 #include <sys/types.h>
 #include <stdint.h>
-#include <linux/types.h>
 
 #ifndef __user
 #define __user
@@ -52,6 +57,26 @@ typedef int cap_value_t;
  * what is known to libcap... Time for a new libcap release!
  */
 extern cap_value_t cap_max_bits(void);
+
+/*
+ * cap_proc_root reads and (optionally: when root != NULL) changes
+ * libcap's notion of where the "/proc" filesystem is mounted. When
+ * the return value is NULL, it should be interpreted as the
+ * value "/proc".
+ *
+ * Note, this is a global value and not considered thread safe to
+ * write - so the client should take suitable care when changing
+ * it.
+ *
+ * Further, libcap will allocate a memory copy for storing the
+ * replacement root, and it is this kind of memory that is returned.
+ * So, when changing the value, the caller should
+ * cap_free(the-return-value) else cause a memory leak.
+ *
+ * Note, the library uses a destructor to clean up the live allocated
+ * value of the working setting.
+ */
+extern char *cap_proc_root(const char *root);
 
 /*
  * Set identifiers
@@ -102,11 +127,13 @@ typedef unsigned cap_mode_t;
 #define CAP_MODE_NOPRIV       ((cap_mode_t) 1)
 #define CAP_MODE_PURE1E_INIT  ((cap_mode_t) 2)
 #define CAP_MODE_PURE1E       ((cap_mode_t) 3)
+#define CAP_MODE_HYBRID       ((cap_mode_t) 4)
 
 /* libcap/cap_alloc.c */
 extern cap_t      cap_dup(cap_t);
 extern int        cap_free(void *);
 extern cap_t      cap_init(void);
+extern cap_iab_t  cap_iab_dup(cap_iab_t);
 extern cap_iab_t  cap_iab_init(void);
 
 /* libcap/cap_flag.c */
@@ -115,10 +142,14 @@ extern int     cap_set_flag(cap_t, cap_flag_t, int, const cap_value_t *,
 			    cap_flag_value_t);
 extern int     cap_clear(cap_t);
 extern int     cap_clear_flag(cap_t, cap_flag_t);
+extern int     cap_fill_flag(cap_t cap_d, cap_flag_t to,
+                             cap_t ref, cap_flag_t from);
 extern int     cap_fill(cap_t, cap_flag_t, cap_flag_t);
 
 #define CAP_DIFFERS(result, flag)  (((result) & (1 << (flag))) != 0)
 extern int     cap_compare(cap_t, cap_t);
+#define CAP_IAB_DIFFERS(result, vector)  (((result) & (1 << (vector))) != 0)
+extern int     cap_iab_compare(cap_iab_t, cap_iab_t);
 
 extern cap_flag_value_t cap_iab_get_vector(cap_iab_t, cap_iab_vector_t,
 					 cap_value_t);
@@ -185,6 +216,7 @@ extern int cap_setuid(uid_t uid);
 extern int cap_setgroups(gid_t gid, size_t ngroups, const gid_t groups[]);
 
 extern cap_iab_t cap_iab_get_proc(void);
+extern cap_iab_t cap_iab_get_pid(pid_t);
 extern int cap_iab_set_proc(cap_iab_t iab);
 
 typedef struct cap_launch_s *cap_launch_t;
@@ -192,14 +224,14 @@ typedef struct cap_launch_s *cap_launch_t;
 extern cap_launch_t cap_new_launcher(const char *arg0, const char * const *argv,
 				     const char * const *envp);
 extern cap_launch_t cap_func_launcher(int (callback_fn)(void *detail));
-extern void cap_launcher_callback(cap_launch_t attr,
-				  int (callback_fn)(void *detail));
-extern void cap_launcher_setuid(cap_launch_t attr, uid_t uid);
-extern void cap_launcher_setgroups(cap_launch_t attr, gid_t gid,
-				   int ngroups, const gid_t *groups);
-extern void cap_launcher_set_mode(cap_launch_t attr, cap_mode_t flavor);
+extern int cap_launcher_callback(cap_launch_t attr,
+				 int (callback_fn)(void *detail));
+extern int cap_launcher_setuid(cap_launch_t attr, uid_t uid);
+extern int cap_launcher_setgroups(cap_launch_t attr, gid_t gid,
+				  int ngroups, const gid_t *groups);
+extern int cap_launcher_set_mode(cap_launch_t attr, cap_mode_t flavor);
 extern cap_iab_t cap_launcher_set_iab(cap_launch_t attr, cap_iab_t iab);
-extern void cap_launcher_set_chroot(cap_launch_t attr, const char *chroot);
+extern int cap_launcher_set_chroot(cap_launch_t attr, const char *chroot);
 extern pid_t cap_launch(cap_launch_t attr, void *detail);
 
 /*
