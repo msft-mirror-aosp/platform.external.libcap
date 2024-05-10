@@ -1,4 +1,4 @@
-.TH CAPSH 1 "2021-07-01" "libcap 2" "User Commands"
+.TH CAPSH 1 "2021-10-22" "libcap" "User Commands"
 .SH NAME
 capsh \- capability shell wrapper
 .SH SYNOPSIS
@@ -31,7 +31,12 @@ with trailing arguments. Note, you can use
 .B \-c 'command to execute'
 for specific commands.
 .TP
-.B ==
+.BI \-\+ " [args]"
+Uses \fBcap_launch\fP(3) to fork a child to execute the shell. When
+the child exits, \fBcapsh\fP exits with the status of the child or 1
+in the case that the child was terminated by a signal.
+.TP
+.BI == " [args]"
 Execute
 .B capsh
 again with the remaining arguments. Useful for testing
@@ -45,6 +50,12 @@ occurs after a
 argument the PATH located binary may not be resolve to the same binary
 as that running initially. This behavior is an intended feature as it
 can complete the chroot transition.
+.TP
+.BI =\+ " [args]"
+Uses \fBcap_launch\fP(3) to fork a child to re-execute
+\fBcapsh\fP. When this child exits, \fBcapsh\fP exits with the status
+of the child or 1 in the case that the child was terminated by a
+signal.
 .TP
 .BI \-\-caps= cap-set
 Set the prevailing process capabilities to those specified by
@@ -91,15 +102,20 @@ Following this command, the effective capabilities will be cleared,
 but the permitted set will not be, so the running program is still
 privileged.
 .TP
-.B \-\-modes
-Lists all of the libcap modes supported by
-.BR \-\-mode .
+.B \-\-mode
+Display the prevailing libcap mode as guessed by the
+.BR cap_get_mode (3)
+function.
 .TP
 .BR \-\-mode= <mode>
 Force the program into a
 .BR cap_set_mode (3)
 security mode. This is a set of securebits and prevailing capability
 arrangement recommended for its pre-determined security stance.
+.TP
+.B \-\-modes
+Lists all of the libcap modes supported by
+.BR \-\-mode= <mode>.
 .TP
 .BR \-\-inmode= <mode>
 Confirm that the prevailing mode is that specified in
@@ -171,7 +187,7 @@ the current process. In all cases,
 is deactivated when an
 .BR exec ()
 is performed. See
-.B \-\-secbits
+.BR \-\-secbits and \-\-mode
 for ways to disable this feature.
 .TP
 .BI \-\-secbits= N
@@ -179,16 +195,17 @@ Set the security-bits for the program.
 This is done using the
 .BR prctl (2)
 .B PR_SET_SECUREBITS
-operation.
-The list of supported bits and their meaning can be found in
-the
+operation.  The list of supported bits and their meaning can be found
+in the
 .B <sys/secbits.h>
 header file. The program will list these bits via the
 .B \-\-print
-command.
-The argument is expressed as a numeric bitmask,
-in any of the formats permitted by
+command.  The argument is expressed as a numeric bitmask, in any of
+the formats permitted by
 .BR strtoul (3).
+An alternative to this bit-twiddling is embedded in the
+.B \-\-mode*
+commandline arguments.
 .TP
 .BI \-\-chroot= /some/path
 Execute the
@@ -222,6 +239,18 @@ Give a brief textual description of what privileges the specified
 capability makes available to a running program. Note, instead of
 \fIcap_xxx\fP, one can provide a decimal number and \fBcapsh\fP will
 look up the corresponding capability's description.
+.TP
+.BI \-\-shell =/full/path
+This option changes the shell that is invoked when the argument
+\fB==\fP is encountered.
+.TP
+.BI \-\-strict
+This option toggles the suppression of subsequent attempts to fixup
+\fB\-\-caps=\fP and \fB\-\-inh=\fP arguments. That is, when the
+prevailing Effective flag does not contain \fBCAP_SETPCAP\fB the to be
+raised Inheritable Flag values (in strict mode) are limited to those
+in the Permitted set. The strict mode defaults to off. Supplying this
+argument an even number of times restores this default behavior.
 .TP
 .BI \-\-suggest= phrase
 Scan each of the textual descriptions of capabilities, known to
@@ -279,6 +308,13 @@ vector has capability
 .B xxx
 raised.
 .TP
+.BI \-\-has\-b= xxx
+Exit with status 1 unless the
+.I bounding
+vector has capability
+.B xxx
+in its (default) non-blocked state.
+.TP
 .BI \-\-iab= xxx
 Attempts to set the IAB tuple of inheritable capability vectors.
 The text conventions used for \fIxxx\fP are those of
@@ -292,6 +328,18 @@ Removes the specified ambient capability from the running process.
 .TP
 .B \-\-noamb
 Drops all ambient capabilities from the running process.
+.TP
+.B \-\-noenv
+Suppresses overriding of the HOME and USER environment variables when
+a subsequent
+.B \-\-user
+argument is processed.
+.TP
+.B \-\-quiet
+This argument is ignored unless it is the first one. If present, it
+suppresses the capsh runtime check to confirm the running libcap is
+recent enough that it can name all of the kernel supported capability
+values.
 .SH "EXIT STATUS"
 Following successful execution,
 .B capsh
@@ -304,12 +352,14 @@ Written by Andrew G. Morgan <morgan@kernel.org>.
 .SH "REPORTING BUGS"
 Please report bugs via:
 .TP
-https://bugzilla.kernel.org/buglist.cgi?component=libcap&list_id=1047723&product=Tools&resolution=---
+https://bugzilla.kernel.org/buglist.cgi?component=libcap&list_id=1090757
 .SH "SEE ALSO"
 .BR libcap (3),
-.BR getcap (8),
-.BR setcap (8),
 .BR cap_from_text (3),
 .BR cap_iab (3)
+.BR capabilities (7),
+.BR captree (8),
+.BR getcap (8),
+.BR getpcaps (8),
 and
-.BR capabilities (7).
+.BR setcap (8).

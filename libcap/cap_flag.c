@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997-8,2008,20 Andrew G. Morgan <morgan@kernel.org>
+ * Copyright (c) 1997-8,2008,20-21 Andrew G. Morgan <morgan@kernel.org>
  *
  * This file deals with flipping of capabilities on internal
  * capability sets as specified by POSIX.1e (formerlly, POSIX 6).
@@ -14,7 +14,6 @@
  * returned as the contents of *raised.  The capability is from one of
  * the sets stored in cap_d as specified by set and value
  */
-
 int cap_get_flag(cap_t cap_d, cap_value_t value, cap_flag_t set,
 		 cap_flag_value_t *raised)
 {
@@ -25,7 +24,9 @@ int cap_get_flag(cap_t cap_d, cap_value_t value, cap_flag_t set,
 
     if (raised && good_cap_t(cap_d) && value >= 0 && value < __CAP_MAXBITS
 	&& set >= 0 && set < NUMBER_OF_CAP_SETS) {
+	_cap_mu_lock(&cap_d->mutex);
 	*raised = isset_cap(cap_d,value,set) ? CAP_SET:CAP_CLEAR;
+	_cap_mu_unlock(&cap_d->mutex);
 	return 0;
     } else {
 	_cap_debug("invalid arguments");
@@ -51,6 +52,7 @@ int cap_set_flag(cap_t cap_d, cap_flag_t set,
 	&& (set >= 0) && (set < NUMBER_OF_CAP_SETS)
 	&& (raise == CAP_SET || raise == CAP_CLEAR) ) {
 	int i;
+	_cap_mu_lock(&cap_d->mutex);
 	for (i=0; i<no_values; ++i) {
 	    if (array_values[i] < 0 || array_values[i] >= __CAP_MAXBITS) {
 		_cap_debug("weird capability (%d) - skipped", array_values[i]);
@@ -64,14 +66,12 @@ int cap_set_flag(cap_t cap_d, cap_flag_t set,
 		}
 	    }
 	}
+	_cap_mu_unlock(&cap_d->mutex);
 	return 0;
-
     } else {
-
 	_cap_debug("invalid arguments");
 	errno = EINVAL;
 	return -1;
-
     }
 }
 
@@ -82,7 +82,9 @@ int cap_set_flag(cap_t cap_d, cap_flag_t set,
 int cap_clear(cap_t cap_d)
 {
     if (good_cap_t(cap_d)) {
+	_cap_mu_lock(&cap_d->mutex);
 	memset(&(cap_d->u), 0, sizeof(cap_d->u));
+	_cap_mu_unlock(&cap_d->mutex);
 	return 0;
     } else {
 	_cap_debug("invalid pointer");
@@ -104,9 +106,11 @@ int cap_clear_flag(cap_t cap_d, cap_flag_t flag)
 	if (good_cap_t(cap_d)) {
 	    unsigned i;
 
+	    _cap_mu_lock(&cap_d->mutex);
 	    for (i=0; i<_LIBCAP_CAPABILITY_U32S; i++) {
 		cap_d->u[i].flat[flag] = 0;
 	    }
+	    _cap_mu_unlock(&cap_d->mutex);
 	    return 0;
 	}
 	/*
@@ -134,6 +138,15 @@ int cap_compare(cap_t a, cap_t b)
 	return -1;
     }
 
+    /*
+     * To avoid a deadlock corner case, we operate on an unlocked
+     * private copy of b
+     */
+    b = cap_dup(b);
+    if (b == NULL) {
+	return -1;
+    }
+    _cap_mu_lock(&a->mutex);
     for (i=0, result=0; i<_LIBCAP_CAPABILITY_U32S; i++) {
 	result |=
 	    ((a->u[i].flat[CAP_EFFECTIVE] != b->u[i].flat[CAP_EFFECTIVE])
@@ -143,16 +156,21 @@ int cap_compare(cap_t a, cap_t b)
 	    | ((a->u[i].flat[CAP_PERMITTED] != b->u[i].flat[CAP_PERMITTED])
 	       ? LIBCAP_PER : 0);
     }
+    _cap_mu_unlock(&a->mutex);
+    cap_free(b);
     return result;
 }
 
 /*
- * cap_fill copies a bit-vector of capability state in a cap_t from
- * one flag to another.
+ * cap_fill_flag copies a bit-vector of capability state in one cap_t from one
+ * flag to another flag of another cap_t.
  */
-int cap_fill(cap_t cap_d, cap_flag_t to, cap_flag_t from)
+int cap_fill_flag(cap_t cap_d, cap_flag_t to, cap_t ref, cap_flag_t from)
 {
-    if (!good_cap_t(cap_d)) {
+    int i;
+    cap_t orig;
+
+    if (!good_cap_t(cap_d) || !good_cap_t(ref)) {
 	errno = EINVAL;
 	return -1;
     }
@@ -163,12 +181,28 @@ int cap_fill(cap_t cap_d, cap_flag_t to, cap_flag_t from)
 	return -1;
     }
 
-    int i;
-    for (i = 0; i < _LIBCAP_CAPABILITY_U32S; i++) {
-	cap_d->u[i].flat[to] = cap_d->u[i].flat[from];
+    orig = cap_dup(ref);
+    if (orig == NULL) {
+	return -1;
     }
 
+    _cap_mu_lock(&cap_d->mutex);
+    for (i = 0; i < _LIBCAP_CAPABILITY_U32S; i++) {
+	cap_d->u[i].flat[to] = orig->u[i].flat[from];
+    }
+    _cap_mu_unlock(&cap_d->mutex);
+
+    cap_free(orig);
     return 0;
+}
+
+/*
+ * cap_fill copies a bit-vector of capability state in a cap_t from
+ * one flag to another.
+ */
+int cap_fill(cap_t cap_d, cap_flag_t to, cap_flag_t from)
+{
+    return cap_fill_flag(cap_d, to, cap_d, from);
 }
 
 /*
@@ -183,20 +217,25 @@ cap_flag_value_t cap_iab_get_vector(cap_iab_t iab, cap_iab_vector_t vec,
 
     unsigned o = (bit >> 5);
     __u32 mask = 1u << (bit & 31);
+    cap_flag_value_t ret;
 
+    _cap_mu_lock(&iab->mutex);
     switch (vec) {
     case CAP_IAB_INH:
-	return !!(iab->i[o] & mask);
+	ret = !!(iab->i[o] & mask);
 	break;
     case CAP_IAB_AMB:
-	return !!(iab->a[o] & mask);
+	ret = !!(iab->a[o] & mask);
 	break;
     case CAP_IAB_BOUND:
-	return !!(iab->nb[o] & mask);
+	ret = !!(iab->nb[o] & mask);
 	break;
     default:
-	return 0;
+	ret = 0;
     }
+    _cap_mu_unlock(&iab->mutex);
+
+    return ret;
 }
 
 /*
@@ -216,6 +255,7 @@ int cap_iab_set_vector(cap_iab_t iab, cap_iab_vector_t vec, cap_value_t bit,
     __u32 on = 1u << (bit & 31);
     __u32 mask = ~on;
 
+    _cap_mu_lock(&iab->mutex);
     switch (vec) {
     case CAP_IAB_INH:
 	iab->i[o] = (iab->i[o] & mask) | (raised ? on : 0);
@@ -230,9 +270,10 @@ int cap_iab_set_vector(cap_iab_t iab, cap_iab_vector_t vec, cap_value_t bit,
 	break;
     default:
 	errno = EINVAL;
-	return -1;
+	_cap_mu_unlock_return(&iab->mutex, -1);
     }
 
+    _cap_mu_unlock(&iab->mutex);
     return 0;
 }
 
@@ -246,6 +287,8 @@ int cap_iab_set_vector(cap_iab_t iab, cap_iab_vector_t vec, cap_value_t bit,
 int cap_iab_fill(cap_iab_t iab, cap_iab_vector_t vec,
 		 cap_t cap_d, cap_flag_t flag)
 {
+    int i, ret = 0;
+
     if (!good_cap_t(cap_d) || !good_cap_iab_t(iab)) {
 	errno = EINVAL;
 	return -1;
@@ -261,8 +304,17 @@ int cap_iab_fill(cap_iab_t iab, cap_iab_vector_t vec,
 	return -1;
     }
 
-    int i;
-    for (i = 0; i < _LIBCAP_CAPABILITY_U32S; i++) {
+    /*
+     * Make a private copy so we don't need to hold two locks at once
+     * avoiding a recipe for a deadlock.
+     */
+    cap_d = cap_dup(cap_d);
+    if (cap_d == NULL) {
+	return -1;
+    }
+
+    _cap_mu_lock(&iab->mutex);
+    for (i = 0; !ret && i < _LIBCAP_CAPABILITY_U32S; i++) {
 	switch (vec) {
 	case CAP_IAB_INH:
 	    iab->i[i] = cap_d->u[i].flat[flag];
@@ -277,9 +329,41 @@ int cap_iab_fill(cap_iab_t iab, cap_iab_vector_t vec,
 	    break;
 	default:
 	    errno = EINVAL;
-	    return -1;
+	    ret = -1;
+	    break;
 	}
     }
+    _cap_mu_unlock(&iab->mutex);
 
-    return 0;
+    cap_free(cap_d);
+    return ret;
+}
+
+/*
+ * cap_iab_compare compares two iab tuples.
+ */
+int cap_iab_compare(cap_iab_t a, cap_iab_t b)
+{
+    int j, result;
+    if (!(good_cap_iab_t(a) && good_cap_iab_t(b))) {
+	_cap_debug("invalid arguments");
+	errno = EINVAL;
+	return -1;
+    }
+    b = cap_iab_dup(b);
+    if (b == NULL) {
+	return -1;
+    }
+
+    _cap_mu_lock(&a->mutex);
+    for (j=0, result=0; j<_LIBCAP_CAPABILITY_U32S; j++) {
+	result |=
+	    (a->i[j] == b->i[j] ? 0 : (1 << CAP_IAB_INH)) |
+	    (a->a[j] == b->a[j] ? 0 : (1 << CAP_IAB_AMB)) |
+	    (a->nb[j] == b->nb[j] ? 0 : (1 << CAP_IAB_BOUND));
+    }
+    _cap_mu_unlock(&a->mutex);
+    cap_free(b);
+
+    return result;
 }

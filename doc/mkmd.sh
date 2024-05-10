@@ -32,6 +32,8 @@ function do_page () {
     sect="${m#*.}"
     output="${base}-${sect}.md"
 
+    echo "converting ${m}" 1>&2
+
     redir="$(grep '^.so man' "${m}")"
     if [[ $? -eq 0 ]]; then
 	r="${redir#*/}"
@@ -47,6 +49,14 @@ function do_page () {
 
 cat > "${index}" <<EOF
 # Manpages for libcap and libpsx
+
+EOF
+
+if [[ -f "local-md.preamble" ]]; then
+    cat "local-md.preamble" >> "${index}"
+fi
+
+cat >> "${index}" <<EOF
 
 ## Individual reference pages
 EOF
@@ -66,6 +76,14 @@ done
 cat >> "${index}" <<EOF
 
 ## More information
+
+EOF
+
+if [[ -f "local-md.postscript" ]]; then
+    cat "local-md.postscript" >> "${index}"
+fi
+
+cat >> "${index}" <<EOF
 
 For further information, see the
 [FullyCapable](https://sites.google.com/site/fullycapable/) homepage

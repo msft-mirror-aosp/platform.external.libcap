@@ -8,12 +8,10 @@ include ../Make.Rules
 #
 
 all:
-	$(MAKE) libcap_launch_test uns_test
-ifeq ($(PTHREADS),yes)
-	$(MAKE) psx_test libcap_psx_test libcap_psx_launch_test
-endif
+	@echo leave test building to test target
 
-install: all
+install:
+	@echo nothing to install from tests
 
 ifeq ($(DYNAMIC),yes)
 LINKEXTRA=-Wl,-rpath,../libcap
@@ -22,7 +20,10 @@ ifeq ($(PTHREADS),yes)
 DEPS += ../libcap/libpsx.so
 endif
 else
-LDSTATIC = --static
+# For this build variant override the LDFLAGS to link statically from
+# libraries within the build tree. If you never want this, use
+# make DYNAMIC=yes ...
+LDFLAGS = --static
 DEPS=../libcap/libcap.a
 ifeq ($(PTHREADS),yes)
 DEPS +=  ../libcap/libpsx.a
@@ -63,59 +64,56 @@ run_psx_test: psx_test
 	./psx_test
 
 psx_test: psx_test.c $(DEPS)
-	$(CC) $(CFLAGS) $(IPATH) $< -o $@ $(LINKEXTRA) $(LIBPSXLIB) $(LDSTATIC)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) $< -o $@ $(LINKEXTRA) $(LIBPSXLIB)
 
 run_libcap_psx_test: libcap_psx_test
 	./libcap_psx_test
 
 libcap_psx_test: libcap_psx_test.c $(DEPS)
-	$(CC) $(CFLAGS) $(IPATH) $< -o $@ $(LINKEXTRA) $(LIBCAPLIB) $(LIBPSXLIB) $(LDSTATIC)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) $< -o $@ $(LINKEXTRA) $(LIBCAPLIB) $(LIBPSXLIB)
 
 # privileged
 uns_test: uns_test.c $(DEPS)
-	$(CC) $(CFLAGS) $(IPATH) $< -o $@ $(LINKEXTRA) $(LIBCAPLIB) $(LDSTATIC)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) $< -o $@ $(LINKEXTRA) $(LIBCAPLIB)
 
 run_uns_test: uns_test
-	echo exit | sudo ./uns_test
+	echo exit | $(SUDO) ./uns_test
 
 run_libcap_launch_test: libcap_launch_test noop ../progs/tcapsh-static
-	sudo ./libcap_launch_test
+	$(SUDO) ./libcap_launch_test
 
 run_libcap_psx_launch_test: libcap_psx_launch_test ../progs/tcapsh-static
-	sudo ./libcap_psx_launch_test
+	$(SUDO) ./libcap_psx_launch_test
 
 libcap_launch_test: libcap_launch_test.c $(DEPS)
-	$(CC) $(CFLAGS) $(IPATH) $< -o $@ $(LINKEXTRA) $(LIBCAPLIB) $(LDSTATIC)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) $< -o $@ $(LINKEXTRA) $(LIBCAPLIB)
 
 # This varies only slightly from the above insofar as it currently
 # only links in the pthreads fork support. TODO() we need to change
 # the source to do something interesting with pthreads.
 libcap_psx_launch_test: libcap_launch_test.c $(DEPS)
-	$(CC) $(CFLAGS) $(IPATH) -DWITH_PTHREADS $< -o $@ $(LINKEXTRA) $(LIBCAPLIB) $(LIBPSXLIB) $(LDSTATIC)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) -DWITH_PTHREADS $< -o $@ $(LINKEXTRA) $(LIBCAPLIB) $(LIBPSXLIB)
 
 
 # This test demonstrates that libpsx is needed to secure multithreaded
 # programs that link against libcap.
 run_exploit_test: exploit noexploit
 	@echo exploit should succeed
-	sudo ./exploit ; if [ $$? -ne 0 ]; then exit 0; else exit 1 ; fi
+	$(SUDO) ./exploit ; if [ $$? -ne 0 ]; then exit 0; else exit 1 ; fi
 	@echo exploit should fail
-	sudo ./noexploit ; if [ $$? -eq 0 ]; then exit 0; else exit 1 ; fi
-
-exploit.o: exploit.c
-	$(CC) $(CFLAGS) $(IPATH) -c $<
+	$(SUDO) ./noexploit ; if [ $$? -eq 0 ]; then exit 0; else exit 1 ; fi
 
 exploit: exploit.o $(DEPS)
-	$(CC) $(CFLAGS) $(IPATH) $< -o $@ $(LINKEXTRA) $(LIBCAPLIB) -lpthread $(LDSTATIC)
+	$(CC) $(CFLAGS) $(LDFLAGS) $< -o $@ $(LINKEXTRA) $(LIBCAPLIB) -lpthread
 
 # Note, for some reason, the order of libraries is important to avoid
 # the exploit working for dynamic linking.
 noexploit: exploit.o $(DEPS)
-	$(CC) $(CFLAGS) $(IPATH) $< -o $@ $(LINKEXTRA) $(LIBPSXLIB) $(LIBCAPLIB) $(LDSTATIC)
+	$(CC) $(CFLAGS) $(LDFLAGS) $< -o $@ $(LINKEXTRA) $(LIBPSXLIB) $(LIBCAPLIB)
 
 # This one runs in a chroot with no shared library files.
 noop: noop.c
-	$(CC) $(CFLAGS) $< -o $@ --static
+	$(CC) $(CFLAGS) $(CPPFLAGS) $< -o $@ --static
 
 clean:
 	rm -f psx_test libcap_psx_test libcap_launch_test uns_test *~

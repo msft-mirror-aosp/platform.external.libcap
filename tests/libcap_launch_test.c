@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,7 +41,9 @@ struct test_case_s {
 static int clean_out(void *data) {
     cap_t empty;
     empty = cap_init();
-    cap_set_proc(empty);
+    if (cap_set_proc(empty) != 0) {
+	_exit(1);
+    }
     cap_free(empty);
     return 0;
 }
@@ -117,16 +120,33 @@ int main(int argc, char **argv) {
 	},
     };
 
+    if (errno != 0) {
+	perror("unexpected initial value for errno");
+	exit(1);
+    }
+
     cap_t orig = cap_get_proc();
+    if (orig == NULL) {
+	perror("failed to get process capabilities");
+	exit(1);
+    }
 
     int success = 1, i;
     for (i=0; vs[i].pass_on != NO_MORE; i++) {
+	cap_launch_t attr = NULL;
 	const struct test_case_s *v = &vs[i];
+	if (cap_launch(attr, NULL) != -1) {
+	    perror("NULL launch didn't fail");
+	    exit(1);
+	}
 	printf("[%d] test should %s\n", i,
 	       v->result || v->launch_abort ? "generate error" : "work");
-	cap_launch_t attr;
 	if (v->args[0] != NULL) {
 	    attr = cap_new_launcher(v->args[0], v->args, v->envp);
+	    if (attr == NULL) {
+		perror("failed to obtain launcher");
+		exit(1);
+	    }
 	    if (v->callback_fn != NULL) {
 		cap_launcher_callback(attr, v->callback_fn);
 	    }
@@ -195,6 +215,10 @@ int main(int argc, char **argv) {
     }
 
     cap_t final = cap_get_proc();
+    if (final == NULL) {
+	perror("unable to get final capabilities");
+	exit(1);
+    }
     if (cap_compare(orig, final)) {
 	char *was = cap_to_text(orig, NULL);
 	char *is = cap_to_text(final, NULL);
