@@ -51,6 +51,17 @@ int pam_get_item(const pam_handle_t *pamh, int item_type, const void **item) {
     return 0;
 }
 
+int pam_set_data(pam_handle_t *pamh, const char *module_data_name, void *data,
+		 void (*cleanup)(pam_handle_t *pamh, void *data,
+				 int error_status)) {
+    if (cleanup != iab_apply) {
+	errno = EINVAL;
+	return -1;
+    }
+    cap_free(data);
+    return -1;
+}
+
 int getgrouplist(const char *user, gid_t group, gid_t *groups, int *ngroups) {
     int i,j;
     for (i = 0; i < n_users; i++) {
@@ -134,31 +145,35 @@ struct vargs {
 static int test_arg_parsing(void) {
     static struct vargs vs[] = {
 	{
-	    { 1, 0, 0, NULL, NULL, NULL },
+	    { 1, 0, 0, 0, NULL, NULL, NULL },
 	    { "debug", NULL }
 	},
 	{
-	    { 0, 1, 0, NULL, NULL, NULL },
+	    { 0, 1, 0, 0, NULL, NULL, NULL },
 	    { "keepcaps", NULL }
 	},
 	{
-	    { 0, 0, 1, NULL, NULL, NULL },
+	    { 0, 0, 1, 0, NULL, NULL, NULL },
 	    { "autoauth", NULL }
 	},
 	{
-	    { 1, 0, 1, NULL, NULL, NULL },
+	    { 1, 0, 1, 0, NULL, NULL, NULL },
 	    { "autoauth", "debug", NULL }
 	},
 	{
-	    { 0, 0, 0, NULL, "/over/there", NULL },
+	    { 0, 0, 0, 0, NULL, "/over/there", NULL },
 	    { "config=/over/there", NULL }
 	},
 	{
-	    { 0, 0, 0, NULL, NULL, "^cap_setfcap" },
+	    { 0, 0, 0, 0, NULL, NULL, "^cap_setfcap" },
 	    { "default=^cap_setfcap", NULL }
 	},
 	{
-	    { 0, 0, 0, NULL, NULL, NULL },
+	    { 0, 0, 0, 1, NULL, NULL, NULL },
+	    { "defer", NULL }
+	},
+	{
+	    { 0, 0, 0, 0, NULL, NULL, NULL },
 	    { NULL }
 	}
     };
@@ -222,8 +237,20 @@ int main(int argc, char *argv[]) {
 	printf("failed to parse arguments\n");
 	exit(1);
     }
-    if (read_capabilities_for_user("morgan", "/dev/null") != NULL) {
-	printf("/dev/null is not a valid config file\n");
+    if (read_capabilities_for_user("alpha", "/dev/null") != NULL) {
+	printf("/dev/null should return no capabilities\n");
+	exit(1);
+    }
+    if (read_capabilities_for_user("unknown", "capability.conf") != NULL) {
+	printf("capability.conf should return no capabilities for unknown\n");
+	exit(1);
+    }
+    char *iab_text = read_capabilities_for_user("alpha", "./incapable.conf");
+    if (iab_text != NULL) {
+	printf("./incapable.conf should grant no capabilities: got=%s\n",
+	       iab_text);
+	free(iab_text);
+	exit(1);
     }
 
     /*
@@ -236,6 +263,10 @@ int main(int argc, char *argv[]) {
     if (getuid() != 0) {
 	cap_free(orig);
 	printf("test_pam_cap: OK! (Skipping privileged tests (uid!=0))\n");
+	exit(0);
+    }
+    if (argc == 1) {
+	printf("test_pam_cap: OK (kick the tires test)\n");
 	exit(0);
     }
 
