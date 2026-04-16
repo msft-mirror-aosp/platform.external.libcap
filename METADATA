@@ -5,11 +5,12 @@
 name: "libcap"
 description: "This is a library for getting and setting POSIX.1e (formerly POSIX 6) draft 15 capabilities."
 third_party {
-  url {
-    type: GIT
+  identifier {
+    type: "Git"
     value: "https://git.kernel.org/pub/scm/libs/libcap/libcap.git"
+    version: "8bed80f9b54b7bd2a1ee1fdc2124a094733c9356"
+    closest_version: "libcap-2.69"
   }
-  version: "libcap-2.69"
   license_type: NOTICE
   last_upgrade_date {
     year: 2023
