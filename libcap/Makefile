@@ -13,13 +13,17 @@ PSXTITLE=libpsx
 PSXLIBNAME=$(PSXTITLE).so
 STAPSXLIBNAME=$(PSXTITLE).a
 
-CAPFILES=cap_alloc cap_proc cap_extint cap_flag cap_text cap_file
+CAPFILES=cap_alloc cap_proc cap_extint cap_flag cap_text cap_file cap_syscalls
 CAPMAGICOBJ=cap_magic.o
-PSXFILES=../psx/psx
+PSXFILES=../psx/psx ../psx/psx_calls ../psx/wrap/psx_wrap
 PSXMAGICOBJ=psx_magic.o
 
 # Always build libcap sources this way:
-CFLAGS += -fPIC
+CFLAGS += -fPIC -D_LIBPSX_PTHREAD_LINKAGE
+
+# https://bugzilla.kernel.org/show_bug.cgi?id=219168
+OVERRIDE_BSYMBOLIC_FUNCTIONS := -Wl,-Bsymbolic-functions
+LDFLAGS := $(filter-out $(OVERRIDE_BSYMBOLIC_FUNCTIONS),$(LDFLAGS))
 
 # The linker magic needed to build a dynamic library as independently
 # executable
@@ -109,7 +113,7 @@ $(STAPSXLIBNAME): $(PSXOBJS) include/sys/psx_syscall.h
 ifeq ($(SHARED),yes)
 
 empty: empty.c
-	$(CC) -o $@ $<
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) $< -o $@
 
 loader.txt: empty
 	$(OBJCOPY) --dump-section .interp=$@ $< /dev/null

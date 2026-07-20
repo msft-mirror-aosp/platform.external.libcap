@@ -1,4 +1,4 @@
-.TH CAP_GET_PROC 3 "2022-04-28" "" "Linux Programmer's Manual"
+.TH CAP_GET_PROC 3 "2024-11-09" "" "Linux Programmer's Manual"
 .SH NAME
 cap_get_proc, cap_set_proc, capgetp, cap_get_bound, cap_drop_bound, \
 cap_get_ambient, cap_set_ambient, cap_reset_ambient, \
@@ -96,7 +96,7 @@ value holds the capabilities that the target
 thinks it has. If the target is operating in a
 .RB ( CLONE_NEWUSER )
 namespace, the system wide privilege of those user namespace
-capabilities my be substantially reduced. See
+capabilities may be substantially reduced. See
 .BR user_namespaces (7)
 for details.
 .PP
@@ -130,15 +130,12 @@ uses this function to determine if ambient capabilities are supported
 by the kernel.
 .PP
 .BR cap_set_ambient ()
-sets the specified ambient capability to a specific value. To complete
-successfully, the prevailing
-.I effective
-capability set must have a raised
-.BR CAP_SETPCAP .
-Further, to raise a specific ambient capability the
+sets the specified ambient capability to a specific value. To raise a
+specific ambient capability the
 .IR inheritable " and " permitted
-sets of the calling process must contain the specified capability, and
-raised ambient bits will only be retained as long as this remains true.
+flags of the calling process must contain the specified capability
+value. Raised ambient bits will only be retained as long as this
+remains true of the inheritable and permitted flags.
 .PP
 .BR cap_reset_ambient ()
 resets all of the ambient capabilities for the calling process to
@@ -182,7 +179,8 @@ which
 identifies as
 .RI `` UNCERTAIN ''.
 Supported modes are:
-.BR CAP_MODE_NOPRIV ", " CAP_MODE_PURE1E_INIT " and " CAP_MODE_PURE1E .
+.BR CAP_MODE_NOPRIV ", " CAP_MODE_HYBRID ", " CAP_MODE_PURE1E " and "
+.BR CAP_MODE_PURE1E_INIT .
 .PP
 .BR cap_prctl ()
 can be used to read state via the \fBprctl\fI()\fP system call.
@@ -260,11 +258,11 @@ is packaged with a separate POSIX semantics system call library:
 If your program uses POSIX threads, to achieve meaningful POSIX
 semantics capability manipulation, you should link your program with:
 .sp
-.B ld ... \-lcap \-lpsx \-lpthread \-\-wrap=pthread_create
+.B ld ... \-lcap $(pkg-config \-\-libs \-\-cflags libpsx)
 .sp
 or,
 .sp
-.B gcc ... \-lcap \-lpsx \-lpthread \-Wl,\-wrap,pthread_create
+.B gcc ... \-lcap $(pkg-config \-\-libs \-\-cflags libpsx)
 .sp
 When linked this way, due to linker magic, libcap uses
 .BR psx_syscall "(3) and " psx_syscall6 (3)

@@ -1,20 +1,20 @@
 # This project was upgraded with external_updater.
-# Usage: tools/external_updater/updater.sh update libcap
-# For more info, check https://cs.android.com/android/platform/superproject/+/main:tools/external_updater/README.md
+# Usage: tools/external_updater/updater.sh update external/libcap
+# For more info, check https://cs.android.com/android/platform/superproject/main/+/main:tools/external_updater/README.md
 
 name: "libcap"
 description: "This is a library for getting and setting POSIX.1e (formerly POSIX 6) draft 15 capabilities."
 third_party {
+  license_type: NOTICE
+  last_upgrade_date {
+    year: 2026
+    month: 7
+    day: 20
+  }
   identifier {
     type: "Git"
     value: "https://git.kernel.org/pub/scm/libs/libcap/libcap.git"
-    version: "8bed80f9b54b7bd2a1ee1fdc2124a094733c9356"
-    closest_version: "libcap-2.69"
-  }
-  license_type: NOTICE
-  last_upgrade_date {
-    year: 2023
-    month: 8
-    day: 23
+    version: "a1fef85d27d0ee12729a64d1c9b2183c6007e56a"
+    closest_version: "libcap-2.78"
   }
 }
