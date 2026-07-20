@@ -94,14 +94,14 @@ pass_capsh --keep=0 --keep=1 --keep=0 --keep=1 --print
 # from setuid root to capable luser (as per wireshark/dumpcap 0.99.7)
 # This test is subtle. It is testing that a change to self, dropping
 # euid=0 back to that of the luser keeps capabilities.
-pass_capsh --uid=1 -- -c "./tcapsh --keep=1 --caps=\"cap_net_raw,cap_net_bind_service=ip\" --print --uid=1 --print --caps=\"cap_net_raw,cap_net_bind_service=pie\" --print"
+pass_capsh --uid=1 --current -- -c "./tcapsh --keep=1 --caps=\"cap_net_raw,cap_net_bind_service=ip\" --current --uid=1 --current --caps=\"cap_net_raw,cap_net_bind_service=pie\" --current"
 
 # this test is a change of user to a new user, note we need to raise
 # the cap_setuid capability (libcap has a function for that) in this case.
-pass_capsh --uid=1 -- -c "./tcapsh --caps=\"cap_net_raw,cap_net_bind_service=ip cap_setuid=p\" --print --cap-uid=2 --print --caps=\"cap_net_raw,cap_net_bind_service=pie\" --print"
+pass_capsh --uid=1 --current -- -c "./tcapsh --caps=\"cap_net_raw,cap_net_bind_service=ip cap_setuid=p\" --current --cap-uid=2 --current --caps=\"cap_net_raw,cap_net_bind_service=pie\" --current"
 
 # This fails, on 2.6.24, but shouldn't
-pass_capsh --uid=1 -- -c "./tcapsh --keep=1 --caps=\"cap_net_raw,cap_net_bind_service=ip\" --uid=1 --forkfor=10 --caps= --print --killit=9 --print"
+pass_capsh --uid=1 -- -c "./tcapsh --keep=1 --caps=\"cap_net_raw,cap_net_bind_service=ip\" --uid=1 --forkfor=10 --caps= --current --killit=9 --current"
 
 # only continue with these if --secbits is supported
 ./capsh --secbits=0x2f > /dev/null 2>&1
@@ -148,7 +148,19 @@ pass_capsh --caps="cap_setpcap=p" --inh=cap_chown --current
 pass_capsh --strict --caps="cap_chown=p" --inh=cap_chown --current
 
 # change the way the capability is obtained (make it inheritable)
+chmod 0000 ./privileged
 ./setcap cap_setuid,cap_setgid=ei ./privileged
+if [ $? -ne 0 ]; then
+    echo "FAILED to set file capability"
+    exit 1
+fi
+chmod 0755 ./privileged
+ln -s privileged unprivileged
+./setcap -r ./unprivileged
+if [ $? -eq 0 ]; then
+    echo "FAILED by removing a capability from a symlinked file"
+    exit 1
+fi
 
 # Note, the bounding set (edited with --drop) only limits p
 # capabilities, not i's.
@@ -224,7 +236,7 @@ EOF
     # the file can never acquire privilege by the ambient method.
     ./setcap = ./privileged
     fail_capsh --keep=1 --uid=$nouid --inh=cap_setuid --addamb=cap_setuid -- \
-	       -c "./privileged --print --uid=1"
+	       -c "./privileged --current --uid=1"
 
     pass_capsh --keep=1 --uid=$nouid --strict \
 	       --caps="cap_setuid=p cap_setpcap=ep" \
@@ -240,13 +252,13 @@ EOF
     # finally remove the capability from the privileged binary and try again.
     ./setcap -r ./privileged
     pass_capsh --keep=1 --uid=$nouid --inh=cap_setuid --addamb=cap_setuid -- \
-	       -c "./privileged --print --uid=1"
+	       -c "./privileged --current --uid=1"
 
     # validate IAB setting with an ambient capability
     pass_capsh --iab='!%cap_chown,^cap_setpcap,cap_setuid'
     fail_capsh --mode=PURE1E --iab='!%cap_chown,^cap_setuid'
 fi
-/bin/rm -f ./privileged
+/bin/rm -f ./privileged ./unprivileged
 
 echo "testing namespaced file caps"
 

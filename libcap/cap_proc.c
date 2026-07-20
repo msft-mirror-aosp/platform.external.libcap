@@ -70,38 +70,7 @@ static struct syscaller_s singlethread = {
 /*
  * This gets reset to 0 if we are *not* linked with libpsx.
  */
-static int _libcap_overrode_syscalls = 1;
-
-/*
- * psx_load_syscalls() is weakly defined so we can have it overridden
- * by libpsx if that library is linked. Specifically, when libcap
- * calls psx_load_sycalls() it is prepared to override the default
- * values for the syscalls that libcap uses to change security state.
- * As can be seen here this present function is mostly a
- * no-op. However, if libpsx is linked, the one present in that
- * library (not being weak) will replace this one and the
- * _libcap_overrode_syscalls value isn't forced to zero.
- *
- * Note: we hardcode the prototype for the psx_load_syscalls()
- * function here so the compiler isn't worried. If we force the build
- * to include the header, we are close to requiring the optional
- * libpsx to be linked.
- */
-void psx_load_syscalls(long int (**syscall_fn)(long int,
-					      long int, long int, long int),
-		       long int (**syscall6_fn)(long int,
-						long int, long int, long int,
-						long int, long int, long int));
-
-__attribute__((weak))
-void psx_load_syscalls(long int (**syscall_fn)(long int,
-					       long int, long int, long int),
-		       long int (**syscall6_fn)(long int,
-						long int, long int, long int,
-						long int, long int, long int))
-{
-    _libcap_overrode_syscalls = 0;
-}
+__attribute__((visibility ("hidden"))) int _libcap_overrode_syscalls = 1;
 
 /*
  * cap_set_syscall overrides the state setting syscalls that libcap does.
@@ -740,12 +709,14 @@ cap_iab_t cap_iab_get_proc(void)
 }
 
 /*
- * _cap_iab_set_proc sets the iab collection using the requested syscaller.
- * The iab value is locked by the caller.
+ * _cap_iab_set_proc sets the iab collection using the requested
+ * syscaller.  The iab value is locked by the caller. Note, if needed,
+ * CAP_SETPCAP will be raised in the Effective flag of the process
+ * internally to the function for the duration of the function call.
  */
 static int _cap_iab_set_proc(struct syscaller_s *sc, cap_iab_t iab)
 {
-    int ret, i, raising = 0;
+    int ret, i, raising = 0, check_bound = 0;
     cap_value_t c;
     cap_t working, temp = cap_get_proc();
 
@@ -757,9 +728,25 @@ static int _cap_iab_set_proc(struct syscaller_s *sc, cap_iab_t iab)
 	__u32 newI = iab->i[i];
 	__u32 oldIP = temp->u[i].flat[CAP_INHERITABLE] |
 	    temp->u[i].flat[CAP_PERMITTED];
-	raising |= (newI & ~oldIP) | iab->a[i] | iab->nb[i];
+	raising |= newI & ~oldIP;
+	if (iab->nb[i]) {
+	    check_bound = 1;
+	}
 	temp->u[i].flat[CAP_INHERITABLE] = newI;
+    }
 
+    if (check_bound) {
+	check_bound = 0;
+	for (c = cap_max_bits(); c-- != 0; ) {
+	    unsigned offset = c >> 5;
+	    __u32 mask = 1U << (c & 31);
+	    if ((iab->nb[offset] & mask) && cap_get_bound(c)) {
+		/* Requesting a change of bounding set. */
+		raising = 1;
+		check_bound = 1;
+		break;
+	    }
+	}
     }
 
     working = cap_dup(temp);
@@ -790,7 +777,7 @@ static int _cap_iab_set_proc(struct syscaller_s *sc, cap_iab_t iab)
 		goto done;
 	    }
 	}
-	if (iab->nb[offset] & mask) {
+	if (check_bound && (iab->nb[offset] & mask)) {
 	    /* drop the bounding bit */
 	    ret = _cap_drop_bound(sc, c);
 	    if (ret) {
