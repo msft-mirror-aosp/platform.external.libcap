@@ -217,11 +217,16 @@ func (c *Set) packFileCap() ([]byte, error) {
 	if magic == 0 {
 		return nil, ErrBadSize
 	}
-	eff := uint32(0)
+	hasEffective := false
+	validEffective := true
 	for _, f := range c.flat {
-		eff |= (f[Permitted] | f[Inheritable]) & f[Effective]
+		hasEffective = hasEffective || f[Effective] != 0
+		validEffective = validEffective && f[Effective] == f[Permitted]|f[Inheritable]
 	}
-	if eff != 0 {
+	if hasEffective {
+		if !validEffective {
+			return nil, ErrBadSet
+		}
 		magic |= vfsCapFlagsEffective
 	}
 	b := new(bytes.Buffer)

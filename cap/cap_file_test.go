@@ -75,3 +75,28 @@ func TestFiles(t *testing.T) {
 		t.Errorf("unable to remove file cap from %q: %v", reg, err)
 	}
 }
+
+func TestFileEffectiveInvariant(t *testing.T) {
+	c := NewSet()
+	if err := c.SetFlag(Permitted, true, CHOWN, DAC_OVERRIDE); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetFlag(Effective, true, CHOWN); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.packFileCap(); err != ErrBadSet {
+		t.Fatalf("partial effective set encoded with error %v, want %v", err, ErrBadSet)
+	}
+	if err := c.SetFlag(Effective, true, DAC_OVERRIDE); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.packFileCap(); err != nil {
+		t.Fatalf("complete effective set rejected: %v", err)
+	}
+	if err := c.ClearFlag(Effective); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.packFileCap(); err != nil {
+		t.Fatalf("empty effective set rejected: %v", err)
+	}
+}
