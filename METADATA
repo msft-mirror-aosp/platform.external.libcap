@@ -17,4 +17,9 @@ third_party {
     version: "a1fef85d27d0ee12729a64d1c9b2183c6007e56a"
     closest_version: "libcap-2.78"
   }
+  security: {
+    tag: "android:on_device_usage"
+    tag: "android:privilege_level:privileged"
+    tag: "android:untrusted_input"
+  }
 }
